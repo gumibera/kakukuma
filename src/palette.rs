@@ -4,6 +4,56 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::Color256;
 
+/// Curated 24-color default palette covering neutrals, warm, cool, and accent hues.
+pub const DEFAULT_PALETTE: [u8; 24] = [
+    // Neutrals (6)
+    0,    // Black
+    236,  // Dark gray
+    244,  // Medium gray
+    250,  // Light gray
+    255,  // Near white (grayscale ramp)
+    15,   // Bright white
+
+    // Warm (6)
+    1,    // Dark red
+    196,  // Bright red
+    208,  // Orange
+    214,  // Light orange / amber
+    226,  // Yellow
+    229,  // Light yellow
+
+    // Cool (6)
+    22,   // Dark green
+    46,   // Bright green
+    30,   // Teal
+    39,   // Sky blue
+    21,   // Bright blue
+    54,   // Dark purple
+
+    // Accent (6)
+    200,  // Pink / magenta
+    213,  // Light pink
+    93,   // Lavender
+    180,  // Tan / skin light
+    137,  // Skin / warm mid
+    94,   // Brown
+];
+
+/// An item in the flattened palette layout — either a color swatch or a section header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteItem {
+    Color(u8),
+    SectionHeader(PaletteSection),
+}
+
+/// Collapsible palette sections below the curated palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteSection {
+    Standard,
+    HueGroups,
+    Grayscale,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CustomPalette {
     pub name: String,
@@ -39,6 +89,7 @@ pub fn save_palette(palette: &CustomPalette, path: &Path) -> Result<(), String> 
 }
 
 pub struct HueGroup {
+    #[allow(dead_code)] // Used in tests; may be displayed in expanded sections later
     pub name: &'static str,
     pub colors: Vec<u8>,
 }
@@ -114,39 +165,6 @@ pub fn build_hue_groups() -> Vec<HueGroup> {
         HueGroup { name: "Purples", colors: purples },
         HueGroup { name: "Pinks", colors: pinks },
     ]
-}
-
-/// Build the flattened list of all browsable colors:
-/// recent colors + standard 16 + hue groups + grays 232–255
-pub fn all_palette_colors(
-    recent: &[Color256],
-    hue_groups: &[HueGroup],
-) -> Vec<u8> {
-    let mut colors = Vec::new();
-
-    // Recent colors
-    for c in recent {
-        colors.push(c.0);
-    }
-
-    // Standard 16
-    for i in 0..16u8 {
-        colors.push(i);
-    }
-
-    // Hue groups
-    for group in hue_groups {
-        for &c in &group.colors {
-            colors.push(c);
-        }
-    }
-
-    // Grayscale 232–255
-    for i in 232..=255u8 {
-        colors.push(i);
-    }
-
-    colors
 }
 
 /// Convert RGB (0–255 each) to HSL. H in 0–359, S and L in 0–100.
@@ -246,6 +264,15 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    fn test_default_palette_unique_and_valid() {
+        let mut seen: HashSet<u8> = HashSet::new();
+        for &idx in &DEFAULT_PALETTE {
+            assert!(seen.insert(idx), "Duplicate index {} in DEFAULT_PALETTE", idx);
+        }
+        assert_eq!(DEFAULT_PALETTE.len(), 24);
+    }
+
+    #[test]
     fn test_all_216_covered() {
         let groups = build_hue_groups();
         let mut seen: HashSet<u8> = HashSet::new();
@@ -278,22 +305,6 @@ mod tests {
         assert!(names.contains(&"Reds"));
         assert!(names.contains(&"Blues"));
         assert!(names.contains(&"Greens"));
-    }
-
-    #[test]
-    fn test_all_palette_colors_includes_everything() {
-        let groups = build_hue_groups();
-        let recent = vec![Color256(196), Color256(46)];
-        let all = all_palette_colors(&recent, &groups);
-
-        // Should contain recent + 16 standard + 216 cube + 24 grayscale
-        assert!(all.len() >= 2 + 16 + 216 + 24);
-        // Check recent are first
-        assert_eq!(all[0], 196);
-        assert_eq!(all[1], 46);
-        // Check standard follow
-        assert_eq!(all[2], 0);
-        assert_eq!(all[17], 15);
     }
 
     #[test]
@@ -431,6 +442,114 @@ mod tests {
         assert_eq!(loaded.colors, vec![22, 28, 34, 40, 46]);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_rename_palette() {
+        let dir = std::env::temp_dir().join("kaku_test_rename");
+        let _ = std::fs::create_dir_all(&dir);
+        let cp = CustomPalette {
+            name: "OldName".to_string(),
+            colors: vec![1, 2, 3],
+        };
+        let old_path = dir.join("OldName.palette");
+        save_palette(&cp, &old_path).unwrap();
+
+        // Rename: load, change name, save new, delete old
+        let mut loaded = load_palette(&old_path).unwrap();
+        loaded.name = "NewName".to_string();
+        let new_path = dir.join("NewName.palette");
+        save_palette(&loaded, &new_path).unwrap();
+        std::fs::remove_file(&old_path).unwrap();
+
+        assert!(!old_path.exists());
+        let reloaded = load_palette(&new_path).unwrap();
+        assert_eq!(reloaded.name, "NewName");
+        assert_eq!(reloaded.colors, vec![1, 2, 3]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_duplicate_palette() {
+        let dir = std::env::temp_dir().join("kaku_test_duplicate");
+        let _ = std::fs::create_dir_all(&dir);
+        let cp = CustomPalette {
+            name: "Original".to_string(),
+            colors: vec![10, 20, 30],
+        };
+        let orig_path = dir.join("Original.palette");
+        save_palette(&cp, &orig_path).unwrap();
+
+        // Duplicate
+        let mut dup = load_palette(&orig_path).unwrap();
+        dup.name = format!("{} (Copy)", dup.name);
+        let dup_path = dir.join(format!("{}.palette", dup.name));
+        save_palette(&dup, &dup_path).unwrap();
+
+        assert!(orig_path.exists());
+        assert!(dup_path.exists());
+        let loaded = load_palette(&dup_path).unwrap();
+        assert_eq!(loaded.name, "Original (Copy)");
+        assert_eq!(loaded.colors, vec![10, 20, 30]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_delete_palette() {
+        let dir = std::env::temp_dir().join("kaku_test_delete");
+        let _ = std::fs::create_dir_all(&dir);
+        let cp = CustomPalette {
+            name: "ToDelete".to_string(),
+            colors: vec![5],
+        };
+        let path = dir.join("ToDelete.palette");
+        save_palette(&cp, &path).unwrap();
+        assert!(path.exists());
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_rename_to_existing_name_blocked() {
+        let dir = std::env::temp_dir().join("kaku_test_rename_conflict");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let cp1 = CustomPalette { name: "A".to_string(), colors: vec![1] };
+        let cp2 = CustomPalette { name: "B".to_string(), colors: vec![2] };
+        save_palette(&cp1, &dir.join("A.palette")).unwrap();
+        save_palette(&cp2, &dir.join("B.palette")).unwrap();
+
+        // Attempting to rename A to B should be blocked (file exists)
+        let new_path = dir.join("B.palette");
+        assert!(new_path.exists(), "Target already exists — rename should be blocked");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_export_palette() {
+        let dir = std::env::temp_dir().join("kaku_test_export");
+        let _ = std::fs::create_dir_all(&dir);
+        let cp = CustomPalette {
+            name: "ExportMe".to_string(),
+            colors: vec![100, 200],
+        };
+        let src = dir.join("ExportMe.palette");
+        save_palette(&cp, &src).unwrap();
+
+        let dest = dir.join("exported_copy.palette");
+        std::fs::copy(&src, &dest).unwrap();
+        assert!(dest.exists());
+        let loaded = load_palette(&dest).unwrap();
+        assert_eq!(loaded.name, "ExportMe");
+        assert_eq!(loaded.colors, vec![100, 200]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

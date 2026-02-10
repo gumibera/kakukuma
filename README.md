@@ -1,22 +1,22 @@
 # Kakukuma ʕ•ᴥ•ʔ
 
-Terminal-native ANSI art editor using Unicode block elements.
+Terminal-native ANSI art editor using Unicode half-block characters.
 
 ![Rust](https://img.shields.io/badge/Rust-2021-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
 
-- **32x32 canvas** rendered with Unicode full-block characters
+- **Dynamic canvas** — resizable from 8x8 to 128x128 with half-block rendering
 - **6 drawing tools**: Pencil, Eraser, Line, Rectangle, Fill, Eyedropper
-- **256-color support** with palette browser organized by hue groups
+- **256-color support** with curated 24-color palette and full xterm-256 browser
+- **3 built-in themes** — Warm, Neon, Dark — cycle with `Ctrl+T`
 - **HSL color sliders** for precise color picking
 - **Custom palettes** — create, save, load, and share `.palette` files
 - **Symmetry modes** — horizontal, vertical, or both for mirrored drawing
 - **Undo/redo** with full stroke-level history
 - **Project files** — save/load `.kaku` files with auto-save recovery
 - **Export** — ANSI art to clipboard or file, with optional plain Unicode export
-- **Grid overlay** toggle for precision work
 - **Mouse support** — click and drag to draw, right-click to eyedrop
 
 ## Installation
@@ -24,7 +24,7 @@ Terminal-native ANSI art editor using Unicode block elements.
 Requires [Rust](https://rustup.rs/) (2021 edition).
 
 ```bash
-git clone https://github.com/gumibera/kakukuma.git
+git clone https://github.com/0xhoneyjar/kakukuma.git
 cd kakukuma
 cargo build --release
 ```
@@ -53,14 +53,14 @@ cargo run -- myart.kaku
 | `R` | Rectangle — click corner, click opposite corner |
 | `F` | Fill — flood fill from click point |
 | `I` | Eyedropper — pick color from canvas |
+| `B` | Cycle block character (full, upper half, lower half, left half, right half) |
 | `T` | Toggle rectangle filled/outline |
 
 ### Colors
 
 | Key | Action |
 |-----|--------|
-| `1`-`0` | Quick select standard colors 0-9 |
-| `Shift+1`-`6` | Quick select standard colors 10-15 |
+| `1`-`0` | Quick select from curated palette |
 | `Arrow keys` | Browse full 256-color palette |
 | `S` | Open HSL color sliders |
 | `C` | Open custom palette dialog |
@@ -73,8 +73,8 @@ cargo run -- myart.kaku
 |-----|--------|
 | `H` | Toggle horizontal symmetry |
 | `V` | Toggle vertical symmetry |
-| `G` | Toggle grid overlay |
 | `Tab` | Toggle preview mode |
+| `Ctrl+T` | Cycle theme (Warm / Neon / Dark) |
 
 ### File Operations
 
@@ -82,7 +82,7 @@ cargo run -- myart.kaku
 |-----|--------|
 | `Ctrl+S` | Save project |
 | `Ctrl+O` | Open project |
-| `Ctrl+N` | New project |
+| `Ctrl+N` | New canvas (choose dimensions) |
 | `Ctrl+E` | Export dialog |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` | Redo |
@@ -104,18 +104,19 @@ cargo run -- myart.kaku
 src/
 ├── main.rs        Entry point, terminal setup
 ├── app.rs         Application state and logic
-├── canvas.rs      32x32 cell grid
+├── canvas.rs      Dynamic-size cell grid (8-128)
 ├── cell.rs        Color256 type, BlockChar, Cell
+├── theme.rs       3 built-in color themes
 ├── tools.rs       Drawing tool implementations
 ├── input.rs       Keyboard and mouse handlers
 ├── history.rs     Undo/redo (command pattern)
 ├── symmetry.rs    Mirror transformations
-├── palette.rs     Hue groups, HSL conversion, custom palettes
-├── project.rs     .kaku file save/load
+├── palette.rs     Curated colors, hue groups, HSL, custom palettes
+├── project.rs     .kaku file save/load (v1-v3)
 ├── export.rs      Plain Unicode and ANSI art export
 └── ui/
     ├── mod.rs       Layout, dialogs, header
-    ├── editor.rs    Canvas rendering widget
+    ├── editor.rs    Canvas rendering widget (half-block)
     ├── toolbar.rs   Tool list panel
     ├── palette.rs   Color palette panel
     └── statusbar.rs Bottom status bar
@@ -125,4 +126,4 @@ Built with [ratatui](https://github.com/ratatui/ratatui) and [crossterm](https:/
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE.md)

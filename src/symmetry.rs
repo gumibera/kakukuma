@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::canvas::CANVAS_WIDTH;
-use crate::canvas::CANVAS_HEIGHT;
 use crate::history::CellMutation;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -51,7 +49,7 @@ impl SymmetryMode {
 
 /// Given a list of mutations, produce mirrored copies based on symmetry mode.
 /// Returns the original mutations plus any mirrored ones.
-pub fn apply_symmetry(mutations: Vec<CellMutation>, mode: SymmetryMode) -> Vec<CellMutation> {
+pub fn apply_symmetry(mutations: Vec<CellMutation>, mode: SymmetryMode, width: usize, height: usize) -> Vec<CellMutation> {
     if mode == SymmetryMode::Off {
         return mutations;
     }
@@ -62,7 +60,7 @@ pub fn apply_symmetry(mutations: Vec<CellMutation>, mode: SymmetryMode) -> Vec<C
         result.push(m.clone());
 
         if mode.has_horizontal() {
-            let mx = CANVAS_WIDTH - 1 - m.x;
+            let mx = width - 1 - m.x;
             if mx != m.x {
                 let mut mirrored = m.clone();
                 mirrored.x = mx;
@@ -71,7 +69,7 @@ pub fn apply_symmetry(mutations: Vec<CellMutation>, mode: SymmetryMode) -> Vec<C
         }
 
         if mode.has_vertical() {
-            let my = CANVAS_HEIGHT - 1 - m.y;
+            let my = height - 1 - m.y;
             if my != m.y {
                 let mut mirrored = m.clone();
                 mirrored.y = my;
@@ -80,8 +78,8 @@ pub fn apply_symmetry(mutations: Vec<CellMutation>, mode: SymmetryMode) -> Vec<C
         }
 
         if mode == SymmetryMode::Quad {
-            let mx = CANVAS_WIDTH - 1 - m.x;
-            let my = CANVAS_HEIGHT - 1 - m.y;
+            let mx = width - 1 - m.x;
+            let my = height - 1 - m.y;
             if mx != m.x && my != m.y {
                 let mut mirrored = m.clone();
                 mirrored.x = mx;
@@ -115,14 +113,14 @@ mod tests {
     #[test]
     fn test_off_no_mirror() {
         let mutations = vec![make_mutation(5, 10)];
-        let result = apply_symmetry(mutations, SymmetryMode::Off);
+        let result = apply_symmetry(mutations, SymmetryMode::Off, 32, 32);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn test_horizontal_mirror() {
         let mutations = vec![make_mutation(5, 10)];
-        let result = apply_symmetry(mutations, SymmetryMode::Horizontal);
+        let result = apply_symmetry(mutations, SymmetryMode::Horizontal, 32, 32);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].x, 5);
         assert_eq!(result[1].x, 26); // 31 - 5
@@ -131,7 +129,7 @@ mod tests {
     #[test]
     fn test_vertical_mirror() {
         let mutations = vec![make_mutation(5, 10)];
-        let result = apply_symmetry(mutations, SymmetryMode::Vertical);
+        let result = apply_symmetry(mutations, SymmetryMode::Vertical, 32, 32);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].y, 10);
         assert_eq!(result[1].y, 21); // 31 - 10
@@ -140,7 +138,7 @@ mod tests {
     #[test]
     fn test_quad_mirror() {
         let mutations = vec![make_mutation(5, 10)];
-        let result = apply_symmetry(mutations, SymmetryMode::Quad);
+        let result = apply_symmetry(mutations, SymmetryMode::Quad, 32, 32);
         assert_eq!(result.len(), 4);
         assert_eq!((result[0].x, result[0].y), (5, 10));
         assert_eq!((result[1].x, result[1].y), (26, 10));
@@ -153,7 +151,7 @@ mod tests {
         // Point on the horizontal center axis (x=15, x mirrored = 16, not same)
         // Point exactly on center for odd: with 32 width, there's no exact center cell
         let mutations = vec![make_mutation(15, 10)];
-        let result = apply_symmetry(mutations, SymmetryMode::Horizontal);
+        let result = apply_symmetry(mutations, SymmetryMode::Horizontal, 32, 32);
         assert_eq!(result.len(), 2);
         assert_eq!(result[1].x, 16); // 31 - 15
     }

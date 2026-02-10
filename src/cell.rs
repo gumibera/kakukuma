@@ -5,18 +5,47 @@ use serde::Serialize;
 pub enum BlockChar {
     Empty,
     Full,
+    UpperHalf,
+    LowerHalf,
+    LeftHalf,
+    RightHalf,
 }
 
 impl BlockChar {
     pub fn to_char(self) -> char {
         match self {
             BlockChar::Empty => ' ',
-            BlockChar::Full => '\u{2588}',
+            BlockChar::Full => '\u{2588}',       // █
+            BlockChar::UpperHalf => '\u{2580}',  // ▀
+            BlockChar::LowerHalf => '\u{2584}',  // ▄
+            BlockChar::LeftHalf => '\u{258C}',   // ▌
+            BlockChar::RightHalf => '\u{2590}',  // ▐
+        }
+    }
+
+    /// Drawable block types (excludes Empty).
+    #[allow(dead_code)]
+    pub const DRAWABLE: [BlockChar; 5] = [
+        BlockChar::Full,
+        BlockChar::UpperHalf,
+        BlockChar::LowerHalf,
+        BlockChar::LeftHalf,
+        BlockChar::RightHalf,
+    ];
+
+    /// Cycle to the next drawable block type.
+    pub fn next(self) -> BlockChar {
+        match self {
+            BlockChar::Full => BlockChar::UpperHalf,
+            BlockChar::UpperHalf => BlockChar::LowerHalf,
+            BlockChar::LowerHalf => BlockChar::LeftHalf,
+            BlockChar::LeftHalf => BlockChar::RightHalf,
+            BlockChar::RightHalf => BlockChar::Full,
+            BlockChar::Empty => BlockChar::Full,
         }
     }
 }
 
-// Custom Deserialize: map legacy half-block variants to Full
 impl<'de> serde::Deserialize<'de> for BlockChar {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -25,7 +54,12 @@ impl<'de> serde::Deserialize<'de> for BlockChar {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
             "Empty" => Ok(BlockChar::Empty),
-            _ => Ok(BlockChar::Full), // Full, UpperHalf, LowerHalf, LeftHalf, RightHalf → Full
+            "Full" => Ok(BlockChar::Full),
+            "UpperHalf" => Ok(BlockChar::UpperHalf),
+            "LowerHalf" => Ok(BlockChar::LowerHalf),
+            "LeftHalf" => Ok(BlockChar::LeftHalf),
+            "RightHalf" => Ok(BlockChar::RightHalf),
+            _ => Ok(BlockChar::Full), // Unknown → Full
         }
     }
 }
@@ -271,5 +305,68 @@ mod tests {
         assert_eq!(cell.fg, Color256(1));
         assert_eq!(cell.bg, Color256(0));
         assert_eq!(cell.block, BlockChar::Full);
+    }
+
+    #[test]
+    fn test_blockchar_to_char() {
+        assert_eq!(BlockChar::Empty.to_char(), ' ');
+        assert_eq!(BlockChar::Full.to_char(), '\u{2588}');
+        assert_eq!(BlockChar::UpperHalf.to_char(), '\u{2580}');
+        assert_eq!(BlockChar::LowerHalf.to_char(), '\u{2584}');
+        assert_eq!(BlockChar::LeftHalf.to_char(), '\u{258C}');
+        assert_eq!(BlockChar::RightHalf.to_char(), '\u{2590}');
+    }
+
+    #[test]
+    fn test_blockchar_next_cycle() {
+        assert_eq!(BlockChar::Full.next(), BlockChar::UpperHalf);
+        assert_eq!(BlockChar::UpperHalf.next(), BlockChar::LowerHalf);
+        assert_eq!(BlockChar::LowerHalf.next(), BlockChar::LeftHalf);
+        assert_eq!(BlockChar::LeftHalf.next(), BlockChar::RightHalf);
+        assert_eq!(BlockChar::RightHalf.next(), BlockChar::Full);
+        assert_eq!(BlockChar::Empty.next(), BlockChar::Full);
+    }
+
+    #[test]
+    fn test_blockchar_serialize_roundtrip() {
+        for block in BlockChar::DRAWABLE {
+            let json = serde_json::to_string(&block).unwrap();
+            let loaded: BlockChar = serde_json::from_str(&json).unwrap();
+            assert_eq!(block, loaded);
+        }
+        // Also test Empty
+        let json = serde_json::to_string(&BlockChar::Empty).unwrap();
+        let loaded: BlockChar = serde_json::from_str(&json).unwrap();
+        assert_eq!(BlockChar::Empty, loaded);
+    }
+
+    #[test]
+    fn test_blockchar_deserialize_halfblocks() {
+        let upper: BlockChar = serde_json::from_str("\"UpperHalf\"").unwrap();
+        assert_eq!(upper, BlockChar::UpperHalf);
+        let lower: BlockChar = serde_json::from_str("\"LowerHalf\"").unwrap();
+        assert_eq!(lower, BlockChar::LowerHalf);
+        let left: BlockChar = serde_json::from_str("\"LeftHalf\"").unwrap();
+        assert_eq!(left, BlockChar::LeftHalf);
+        let right: BlockChar = serde_json::from_str("\"RightHalf\"").unwrap();
+        assert_eq!(right, BlockChar::RightHalf);
+    }
+
+    #[test]
+    fn test_blockchar_deserialize_unknown_fallback() {
+        let block: BlockChar = serde_json::from_str("\"SomethingNew\"").unwrap();
+        assert_eq!(block, BlockChar::Full);
+    }
+
+    #[test]
+    fn test_cell_halfblock_roundtrip() {
+        let cell = Cell {
+            block: BlockChar::UpperHalf,
+            fg: Color256(196),
+            bg: Color256(0),
+        };
+        let json = serde_json::to_string(&cell).unwrap();
+        let loaded: Cell = serde_json::from_str(&json).unwrap();
+        assert_eq!(cell, loaded);
     }
 }

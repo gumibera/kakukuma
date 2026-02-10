@@ -1,13 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use crate::canvas::Canvas;
+use crate::canvas::{self, Canvas};
 use crate::cell::Color256;
 use crate::cell::BlockChar;
 use crate::export;
 use crate::history::{CellMutation, History};
 use crate::project::Project;
 use crate::symmetry::{self, SymmetryMode};
-use crate::palette::{self, HueGroup};
+use crate::palette::{self, HueGroup, PaletteItem, PaletteSection};
+use crate::theme::{Theme, THEMES};
 use crate::tools::{self, ToolKind, ToolState};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -23,11 +24,20 @@ pub enum AppMode {
     ColorSliders,
     PaletteDialog,
     PaletteNameInput,
+    PaletteRename,
+    PaletteExport,
+    NewCanvas,
 }
 
 pub struct StatusMessage {
     pub text: String,
     pub ticks_remaining: u16,
+}
+
+pub struct PaletteSectionState {
+    pub standard_expanded: bool,
+    pub hue_expanded: bool,
+    pub grayscale_expanded: bool,
 }
 
 pub struct App {
@@ -37,7 +47,6 @@ pub struct App {
     pub symmetry: SymmetryMode,
     pub history: History,
     pub cursor: Option<(usize, usize)>,
-    pub show_grid: bool,
     pub show_preview: bool,
     pub tool_state: ToolState,
     pub mode: AppMode,
@@ -77,18 +86,29 @@ pub struct App {
     pub custom_palette: Option<palette::CustomPalette>,
     pub palette_dialog_files: Vec<String>,
     pub palette_dialog_selected: usize,
+    // Active block character for drawing
+    pub active_block: BlockChar,
+    // Palette section collapse state
+    pub palette_sections: PaletteSectionState,
+    // Flattened palette layout for cursor navigation
+    pub palette_layout: Vec<PaletteItem>,
+    // Theme index (0=Warm, 1=Neon, 2=Dark)
+    pub theme_index: usize,
+    // New Canvas dialog state
+    pub new_canvas_width: usize,
+    pub new_canvas_height: usize,
+    pub new_canvas_cursor: u8, // 0=width, 1=height
 }
 
 impl App {
     pub fn new() -> Self {
-        App {
+        let mut app = App {
             canvas: Canvas::new(),
             active_tool: ToolKind::Pencil,
             color: Color256::WHITE,
             symmetry: SymmetryMode::Off,
             history: History::new(),
             cursor: None,
-            show_grid: true,
             show_preview: false,
             tool_state: ToolState::Idle,
             mode: AppMode::Normal,
@@ -117,7 +137,94 @@ impl App {
             custom_palette: None,
             palette_dialog_files: Vec::new(),
             palette_dialog_selected: 0,
+            active_block: BlockChar::Full,
+            palette_sections: PaletteSectionState {
+                standard_expanded: false,
+                hue_expanded: false,
+                grayscale_expanded: false,
+            },
+            palette_layout: Vec::new(),
+            theme_index: 0,
+            new_canvas_width: canvas::DEFAULT_WIDTH,
+            new_canvas_height: canvas::DEFAULT_HEIGHT,
+            new_canvas_cursor: 0,
+        };
+        app.rebuild_palette_layout();
+        app
+    }
+
+    /// Rebuild the flat palette layout from curated colors, section headers,
+    /// and expanded section colors.
+    pub fn rebuild_palette_layout(&mut self) {
+        let mut layout = Vec::new();
+
+        // Curated palette (or custom palette) always at top
+        if let Some(ref cp) = self.custom_palette {
+            for &idx in &cp.colors {
+                layout.push(PaletteItem::Color(idx));
+            }
+        } else {
+            for &idx in &palette::DEFAULT_PALETTE {
+                layout.push(PaletteItem::Color(idx));
+            }
         }
+
+        // Standard 16 section
+        layout.push(PaletteItem::SectionHeader(PaletteSection::Standard));
+        if self.palette_sections.standard_expanded {
+            for i in 0..16u8 {
+                layout.push(PaletteItem::Color(i));
+            }
+        }
+
+        // Hue Groups section
+        layout.push(PaletteItem::SectionHeader(PaletteSection::HueGroups));
+        if self.palette_sections.hue_expanded {
+            for group in &self.hue_groups {
+                for &c in &group.colors {
+                    layout.push(PaletteItem::Color(c));
+                }
+            }
+        }
+
+        // Grayscale section
+        layout.push(PaletteItem::SectionHeader(PaletteSection::Grayscale));
+        if self.palette_sections.grayscale_expanded {
+            for i in 232..=255u8 {
+                layout.push(PaletteItem::Color(i));
+            }
+        }
+
+        self.palette_layout = layout;
+    }
+
+    pub fn theme(&self) -> &Theme {
+        &THEMES[self.theme_index]
+    }
+
+    pub fn cycle_theme(&mut self) {
+        self.theme_index = (self.theme_index + 1) % THEMES.len();
+        self.set_status(&format!("Theme: {}", self.theme().name));
+    }
+
+    /// Quick-pick the Nth curated palette color (0-indexed).
+    /// Returns true if a color was picked.
+    pub fn quick_pick_color(&mut self, n: usize) -> bool {
+        let mut count = 0;
+        for (i, item) in self.palette_layout.iter().enumerate() {
+            match item {
+                PaletteItem::Color(idx) => {
+                    if count == n {
+                        self.color = Color256(*idx);
+                        self.palette_cursor = i;
+                        return true;
+                    }
+                    count += 1;
+                }
+                PaletteItem::SectionHeader(_) => break,
+            }
+        }
+        false
     }
 
     pub fn set_status(&mut self, msg: &str) {
@@ -137,19 +244,6 @@ impl App {
         }
     }
 
-    /// Get the flattened list of all browsable palette colors.
-    pub fn all_palette_colors(&self) -> Vec<u8> {
-        let mut colors = Vec::new();
-
-        // Custom palette colors at top when loaded
-        if let Some(ref cp) = self.custom_palette {
-            colors.extend(&cp.colors);
-        }
-
-        colors.extend(palette::all_palette_colors(&self.recent_colors, &self.hue_groups));
-        colors
-    }
-
     /// Ensure palette_scroll keeps the cursor visible in a given viewport height.
     pub fn ensure_palette_cursor_visible(&mut self, viewport_height: usize) {
         // Approximate: each color row holds COLS=6 items, plus section headers.
@@ -161,6 +255,12 @@ impl App {
         } else if estimated_line >= self.palette_scroll + viewport_height.saturating_sub(2) {
             self.palette_scroll = estimated_line.saturating_sub(viewport_height.saturating_sub(4));
         }
+    }
+
+    /// Cycle to the next drawable block character.
+    pub fn cycle_block(&mut self) {
+        self.active_block = self.active_block.next();
+        self.set_status(&format!("Block: {}", self.active_block.to_char()));
     }
 
     /// Track a color in the recent colors list.
@@ -180,18 +280,21 @@ impl App {
         let mutations = match self.active_tool {
             ToolKind::Pencil => {
                 self.track_recent_color(fg);
-                tools::pencil(&self.canvas, x, y, BlockChar::Full, fg, bg)
+                tools::pencil(&self.canvas, x, y, self.active_block, fg, bg)
             }
             ToolKind::Eraser => tools::eraser(&self.canvas, x, y),
             ToolKind::Fill => {
                 self.track_recent_color(fg);
-                tools::flood_fill(&self.canvas, x, y, BlockChar::Full, fg, bg)
+                tools::flood_fill(&self.canvas, x, y, self.active_block, fg, bg)
             }
             ToolKind::Eyedropper => {
-                if let Some((picked, _bg, _block)) = tools::eyedropper(&self.canvas, x, y) {
+                if let Some((picked, _bg, block)) = tools::eyedropper(&self.canvas, x, y) {
                     self.color = picked;
+                    if block != BlockChar::Empty {
+                        self.active_block = block;
+                    }
                     self.track_recent_color(picked);
-                    self.set_status(&format!("Picked: {}", picked.name()));
+                    self.set_status(&format!("Picked: {} {}", picked.name(), block.to_char()));
                 }
                 return;
             }
@@ -205,7 +308,7 @@ impl App {
                     ToolState::LineStart { x: x0, y: y0 } => {
                         self.tool_state = ToolState::Idle;
                         self.track_recent_color(fg);
-                        tools::line(&self.canvas, x0, y0, x, y, BlockChar::Full, fg, bg)
+                        tools::line(&self.canvas, x0, y0, x, y, self.active_block, fg, bg)
                     }
                     _ => return,
                 }
@@ -221,7 +324,7 @@ impl App {
                         self.tool_state = ToolState::Idle;
                         self.track_recent_color(fg);
                         tools::rectangle(
-                            &self.canvas, x0, y0, x, y, BlockChar::Full, fg, bg,
+                            &self.canvas, x0, y0, x, y, self.active_block, fg, bg,
                             self.filled_rect,
                         )
                     }
@@ -231,21 +334,25 @@ impl App {
         };
 
         // Apply symmetry
-        let mutations = symmetry::apply_symmetry(mutations, self.symmetry);
+        let mutations = symmetry::apply_symmetry(mutations, self.symmetry, self.canvas.width, self.canvas.height);
 
         if mutations.is_empty() {
             return;
         }
 
-        // Read old values for mirrored cells (symmetry mutations have wrong `old` values
-        // since they were cloned from the original mutation)
+        // Read actual old values and composite half-block draws onto existing cells.
+        // Symmetry mutations have wrong `old` values since they were cloned from
+        // the original mutation, so we always re-read the canvas here.
         let mutations: Vec<CellMutation> = mutations
             .into_iter()
-            .map(|mut m| {
+            .filter_map(|mut m| {
                 if let Some(actual_old) = self.canvas.get(m.x, m.y) {
                     m.old = actual_old;
+                    m.new = tools::compose_cell(actual_old, m.new.block, m.new.fg, m.new.bg);
+                    if m.old != m.new { Some(m) } else { None }
+                } else {
+                    None
                 }
-                m
             })
             .collect();
 
@@ -337,6 +444,81 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Rename the selected palette file.
+    pub fn rename_selected_palette(&mut self, new_name: &str) {
+        if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
+            let new_filename = format!("{}.palette", new_name);
+            if Path::new(&new_filename).exists() {
+                self.set_status("Palette already exists");
+                return;
+            }
+            // Load, rename, save to new file, delete old
+            match palette::load_palette(Path::new(&filename)) {
+                Ok(mut cp) => {
+                    cp.name = new_name.to_string();
+                    match palette::save_palette(&cp, Path::new(&new_filename)) {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(&filename);
+                            self.set_status(&format!("Renamed to: {}", new_name));
+                            // Update loaded palette if it was the renamed one
+                            if let Some(ref mut loaded) = self.custom_palette {
+                                let expected = filename.clone();
+                                if format!("{}.palette", loaded.name) == expected {
+                                    loaded.name = new_name.to_string();
+                                }
+                            }
+                            // Refresh
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            self.palette_dialog_files = palette::list_palette_files(&cwd);
+                            self.palette_dialog_selected = self.palette_dialog_selected.min(
+                                self.palette_dialog_files.len().saturating_sub(1),
+                            );
+                        }
+                        Err(e) => self.set_status(&format!("Rename failed: {}", e)),
+                    }
+                }
+                Err(e) => self.set_status(&format!("Rename failed: {}", e)),
+            }
+        }
+        self.mode = AppMode::PaletteDialog;
+    }
+
+    /// Duplicate the selected palette with "(Copy)" suffix.
+    pub fn duplicate_selected_palette(&mut self) {
+        if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
+            match palette::load_palette(Path::new(&filename)) {
+                Ok(mut cp) => {
+                    cp.name = format!("{} (Copy)", cp.name);
+                    let new_filename = format!("{}.palette", cp.name);
+                    match palette::save_palette(&cp, Path::new(&new_filename)) {
+                        Ok(()) => {
+                            self.set_status(&format!("Duplicated: {}", cp.name));
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            self.palette_dialog_files = palette::list_palette_files(&cwd);
+                        }
+                        Err(e) => self.set_status(&format!("Duplicate failed: {}", e)),
+                    }
+                }
+                Err(e) => self.set_status(&format!("Duplicate failed: {}", e)),
+            }
+        }
+    }
+
+    /// Export the selected palette to a user-specified path.
+    pub fn export_selected_palette(&mut self, dest: &str) {
+        if let Some(filename) = self.palette_dialog_files.get(self.palette_dialog_selected).cloned() {
+            match std::fs::copy(&filename, dest) {
+                Ok(_) => {
+                    self.set_status(&format!("Exported to: {}", dest));
+                }
+                Err(e) => {
+                    self.set_status(&format!("Export failed: {}", e));
+                }
+            }
+        }
+        self.mode = AppMode::PaletteDialog;
     }
 
     /// Create a new custom palette with the given name.
@@ -442,19 +624,6 @@ impl App {
                 self.set_status(&format!("Load failed: {}", e));
             }
         }
-    }
-
-    /// Create a new blank project (Ctrl+N).
-    pub fn new_project(&mut self) {
-        self.canvas.clear();
-        self.color = Color256::WHITE;
-        self.symmetry = SymmetryMode::Off;
-        self.history = History::new();
-        self.dirty = false;
-        self.project_name = None;
-        self.project_path = None;
-        self.auto_save_ticks = 0;
-        self.set_status("New project");
     }
 
     /// Populate file dialog with .kaku files from current directory.

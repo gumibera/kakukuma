@@ -1,4 +1,4 @@
-use crate::canvas::{Canvas, CANVAS_HEIGHT, CANVAS_WIDTH};
+use crate::canvas::Canvas;
 use crate::cell::BlockChar;
 
 /// Export canvas as plain Unicode (block characters only, no color).
@@ -8,8 +8,8 @@ pub fn to_plain_text(canvas: &Canvas) -> String {
     let mut last_non_empty_row = 0;
 
     // Find last row with content
-    for y in 0..CANVAS_HEIGHT {
-        for x in 0..CANVAS_WIDTH {
+    for y in 0..canvas.height {
+        for x in 0..canvas.width {
             if let Some(cell) = canvas.get(x, y) {
                 if cell.block != BlockChar::Empty {
                     last_non_empty_row = y;
@@ -21,7 +21,7 @@ pub fn to_plain_text(canvas: &Canvas) -> String {
 
     for y in 0..=last_non_empty_row {
         let mut row = String::new();
-        for x in 0..CANVAS_WIDTH {
+        for x in 0..canvas.width {
             if let Some(cell) = canvas.get(x, y) {
                 let ch = cell.block.to_char();
                 row.push(ch);
@@ -46,8 +46,8 @@ pub fn to_ansi(canvas: &Canvas) -> String {
     let mut output = String::new();
     let mut last_non_empty_row = 0;
 
-    for y in 0..CANVAS_HEIGHT {
-        for x in 0..CANVAS_WIDTH {
+    for y in 0..canvas.height {
+        for x in 0..canvas.width {
             if let Some(cell) = canvas.get(x, y) {
                 if cell.block != BlockChar::Empty {
                     last_non_empty_row = y;
@@ -61,7 +61,7 @@ pub fn to_ansi(canvas: &Canvas) -> String {
         let mut prev_fg = None;
         let mut prev_bg = None;
 
-        for x in 0..CANVAS_WIDTH {
+        for x in 0..canvas.width {
             if let Some(cell) = canvas.get(x, y) {
                 let ch = cell.block.to_char();
 
