@@ -7,6 +7,7 @@ mod input;
 mod palette;
 mod project;
 mod symmetry;
+mod theme;
 mod tools;
 mod ui;
 

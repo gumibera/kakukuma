@@ -1,21 +1,15 @@
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::cell::Color256;
-
-// Warm accent colors (shared with mod.rs)
-const WARM_ORANGE: Color = Color::Indexed(214);
-const WARM_GRAY_DIM: Color = Color::Indexed(243);
-const WARM_GRAY_SEP: Color = Color::Indexed(239);
+use crate::palette::{PaletteItem, PaletteSection};
+use crate::theme::Theme;
 
 const COLS: usize = 6;
+const PALETTE_INNER_WIDTH: usize = 18; // box width (20) minus 2 border chars
 
 /// Render a row of color swatches (up to COLS per row).
-/// Returns the lines added.
 fn render_color_row(
     colors: &[u8],
     active_color: Color256,
@@ -26,7 +20,10 @@ fn render_color_row(
     for chunk_start in (0..colors.len()).step_by(COLS) {
         let chunk_end = (chunk_start + COLS).min(colors.len());
         let mut spans = Vec::new();
-        spans.push(Span::raw(" "));
+        let chunk_len = chunk_end - chunk_start;
+        let content_width = chunk_len * 2 + chunk_len.saturating_sub(1); // swatches + separators
+        let pad = PALETTE_INNER_WIDTH.saturating_sub(content_width) / 2;
+        spans.push(Span::raw(" ".repeat(pad.max(1))));
         for (i, &idx) in colors[chunk_start..chunk_end].iter().enumerate() {
             let color = Color256(idx);
             let rcolor = color.to_ratatui();
@@ -59,112 +56,133 @@ fn render_color_row(
     lines
 }
 
-fn separator(width: u16) -> Line<'static> {
-    let w = width.min(18) as usize;
-    Line::from(Span::styled(
-        format!(" {}", "\u{2500}".repeat(w.saturating_sub(2))),
-        Style::default().fg(WARM_GRAY_SEP),
-    ))
+/// Render a collapsible section header line.
+fn section_header_line(section: PaletteSection, expanded: bool, is_cursor: bool, theme: &Theme) -> Line<'static> {
+    let indicator = if expanded { "\u{25BE}" } else { "\u{25B8}" }; // ▾ or ▸
+    let (name, count) = match section {
+        PaletteSection::Standard => ("Standard", 16),
+        PaletteSection::HueGroups => ("Hue Groups", 216),
+        PaletteSection::Grayscale => ("Grayscale", 24),
+    };
+    let raw_text = format!("{} {} ({})", indicator, name, count);
+    let pad = PALETTE_INNER_WIDTH.saturating_sub(raw_text.len()) / 2;
+    let text = format!("{}{}", " ".repeat(pad.max(1)), raw_text);
+    let style = if is_cursor {
+        Style::default()
+            .fg(Color::Black)
+            .bg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    };
+    Line::from(Span::styled(text, style))
 }
 
-fn section_header(title: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        format!(" {}", title),
-        Style::default().fg(WARM_ORANGE).add_modifier(Modifier::BOLD),
-    ))
+/// Find the index of the first SectionHeader in the palette layout.
+fn first_section_index(app: &App) -> usize {
+    app.palette_layout
+        .iter()
+        .position(|item| matches!(item, PaletteItem::SectionHeader(_)))
+        .unwrap_or(app.palette_layout.len())
 }
 
-pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let mut all_lines: Vec<Line> = Vec::new();
-    let mut flat_offset: usize = 0;
+/// Curated color swatches (items before the first SectionHeader).
+pub fn color_lines(app: &App) -> Vec<Line<'static>> {
+    let split = first_section_index(app);
+    let layout = &app.palette_layout;
 
-    // === Recent Colors ===
-    if !app.recent_colors.is_empty() {
-        all_lines.push(section_header("Recent"));
-        let recent_indices: Vec<u8> = app.recent_colors.iter().map(|c| c.0).collect();
-        let rows = render_color_row(&recent_indices, app.color, flat_offset, app.palette_cursor);
-        flat_offset += recent_indices.len();
-        all_lines.extend(rows);
-        all_lines.push(separator(area.width));
-    }
-
-    // === Standard 16 ===
-    all_lines.push(section_header("Standard"));
-    let standard: Vec<u8> = (0..16).collect();
-    let rows = render_color_row(&standard, app.color, flat_offset, app.palette_cursor);
-    flat_offset += 16;
-    all_lines.extend(rows);
-    all_lines.push(separator(area.width));
-
-    // === Hue Groups ===
-    for group in &app.hue_groups {
-        if group.colors.is_empty() {
-            continue;
+    let mut colors: Vec<u8> = Vec::new();
+    for item in layout.iter().take(split) {
+        if let PaletteItem::Color(idx) = item {
+            colors.push(*idx);
         }
-        all_lines.push(section_header(group.name));
-        let rows = render_color_row(&group.colors, app.color, flat_offset, app.palette_cursor);
-        flat_offset += group.colors.len();
-        all_lines.extend(rows);
     }
-    all_lines.push(separator(area.width));
 
-    // === Grayscale ===
-    all_lines.push(section_header("Grays"));
-    let grays: Vec<u8> = (232..=255).collect();
-    let rows = render_color_row(&grays, app.color, flat_offset, app.palette_cursor);
-    // flat_offset += 24; // not needed after last section
-    let _ = flat_offset; // suppress unused warning
-    all_lines.extend(rows);
-    all_lines.push(Line::from(""));
+    render_color_row(&colors, app.color, 0, app.palette_cursor)
+}
 
-    // === Current Color ===
+/// Section headers + expanded section colors (from first SectionHeader onward).
+pub fn section_lines(app: &App) -> Vec<Line<'static>> {
+    let theme = app.theme();
+    let split = first_section_index(app);
+    let layout = &app.palette_layout;
+    let mut all_lines: Vec<Line> = Vec::new();
+
+    let mut i = split;
+    let mut color_batch: Vec<u8> = Vec::new();
+    let mut batch_start = 0;
+
+    while i < layout.len() {
+        match layout[i] {
+            PaletteItem::Color(idx) => {
+                if color_batch.is_empty() {
+                    batch_start = i;
+                }
+                color_batch.push(idx);
+                i += 1;
+                // Flush at end or if next item is a header
+                if i >= layout.len() || matches!(layout[i], PaletteItem::SectionHeader(_)) {
+                    let rows = render_color_row(
+                        &color_batch,
+                        app.color,
+                        batch_start,
+                        app.palette_cursor,
+                    );
+                    all_lines.extend(rows);
+                    color_batch.clear();
+                }
+            }
+            PaletteItem::SectionHeader(section) => {
+                let expanded = match section {
+                    PaletteSection::Standard => app.palette_sections.standard_expanded,
+                    PaletteSection::HueGroups => app.palette_sections.hue_expanded,
+                    PaletteSection::Grayscale => app.palette_sections.grayscale_expanded,
+                };
+                let is_cursor = i == app.palette_cursor;
+                all_lines.push(section_header_line(section, expanded, is_cursor, theme));
+                i += 1;
+            }
+        }
+    }
+
+    all_lines
+}
+
+/// Center a text string within PALETTE_INNER_WIDTH.
+fn center_line(text: &str, style: Style) -> Line<'static> {
+    let pad = PALETTE_INNER_WIDTH.saturating_sub(text.len()) / 2;
+    Line::from(Span::styled(
+        format!("{}{}", " ".repeat(pad.max(1)), text),
+        style,
+    ))
+}
+
+/// Current color swatch + name + hint lines (5 centered lines).
+pub fn info_lines(app: &App) -> Vec<Line<'static>> {
+    let theme = app.theme();
+    let dim = Style::default().fg(theme.dim);
     let color_style = Style::default()
         .fg(app.color.to_ratatui())
         .bg(Color::Black);
 
-    all_lines.push(Line::from(vec![
-        Span::raw(" FG: "),
-        Span::styled("\u{2588}\u{2588}\u{2588}\u{2588}", color_style),
-        Span::styled(
-            format!(" {}", app.color.name()),
-            Style::default().fg(WARM_GRAY_DIM),
-        ),
-    ]));
+    // Line 1: color swatch + name (mixed styles, centered)
+    let swatch = "\u{2588}\u{2588}\u{2588}\u{2588}";
+    let name = format!(" {}", app.color.name());
+    let content_len = 4 + name.len(); // 4 chars for swatch display width
+    let pad = PALETTE_INNER_WIDTH.saturating_sub(content_len) / 2;
+    let line1 = Line::from(vec![
+        Span::raw(" ".repeat(pad.max(1))),
+        Span::styled(swatch.to_string(), color_style),
+        Span::styled(name, dim),
+    ]);
 
-    // === Hints ===
-    all_lines.push(Line::from(Span::styled(
-        " \u{2191}\u{2193} Browse  [S]liders [C]ustom",
-        Style::default().fg(WARM_GRAY_DIM),
-    )));
-
-    // === Preview Toggle ===
-    all_lines.push(separator(area.width));
-    all_lines.push(section_header("Preview"));
-    let preview_text = if app.show_preview {
-        " [Tab] On"
-    } else {
-        " [Tab] Off"
-    };
-    let preview_style = if app.show_preview {
-        Style::default().fg(Color::Green)
-    } else {
-        Style::default().fg(WARM_GRAY_DIM)
-    };
-    all_lines.push(Line::from(Span::styled(
-        preview_text.to_string(),
-        preview_style,
-    )));
-
-    // Apply scrolling — clip to the visible area height
-    let visible_height = area.height as usize;
-    let scroll = app.palette_scroll.min(all_lines.len().saturating_sub(visible_height));
-    let end = (scroll + visible_height).min(all_lines.len());
-    let visible_lines: Vec<Line> = if scroll < all_lines.len() {
-        all_lines[scroll..end].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    let paragraph = Paragraph::new(visible_lines);
-    f.render_widget(paragraph, area);
+    vec![
+        line1,
+        center_line("\u{2191}\u{2193} Browse", dim),
+        center_line("[S]liders", dim),
+        center_line("[C]ustom", dim),
+        center_line("[A]dd color", dim),
+    ]
 }

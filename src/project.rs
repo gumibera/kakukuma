@@ -19,7 +19,7 @@ impl Project {
     pub fn new(name: &str, canvas: Canvas, color: Color256, sym: SymmetryMode) -> Self {
         let now = now_iso8601();
         Project {
-            version: 2,
+            version: 3,
             name: name.to_string(),
             created_at: now.clone(),
             modified_at: now,
@@ -42,10 +42,10 @@ impl Project {
             .map_err(|e| format!("Read error: {}", e))?;
         let project: Project = serde_json::from_str(&data)
             .map_err(|e| format!("Parse error: {}", e))?;
-        // Accept both v1 (legacy 16-color) and v2 (256-color)
-        if project.version > 2 {
+        // Accept v1 (legacy 16-color), v2 (256-color), v3 (dynamic canvas)
+        if project.version > 3 {
             return Err(format!(
-                "File version {} is newer than supported (v2)",
+                "File version {} is newer than supported (v3)",
                 project.version
             ));
         }
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(loaded.name, "test-project");
         assert_eq!(loaded.color, Color256(2));
         assert_eq!(loaded.symmetry, SymmetryMode::Horizontal);
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, 3);
         assert_eq!(
             loaded.canvas.get(5, 10),
             Some(Cell {

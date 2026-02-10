@@ -1,8 +1,11 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::app::{App, AppMode};
+use crate::canvas::Canvas;
 use crate::cell::Color256;
-use crate::tools::ToolKind;
+use crate::history::History;
+use crate::palette::{PaletteItem, PaletteSection};
+use crate::tools::{ToolKind, ToolState};
 
 /// Canvas area position in terminal coordinates.
 /// Set by the UI renderer each frame.
@@ -28,11 +31,7 @@ impl CanvasArea {
         // Each canvas cell is 2 chars wide
         let canvas_x = (rel_x / 2) as usize;
         let canvas_y = rel_y as usize;
-        if canvas_x < 32 && canvas_y < 32 {
-            Some((canvas_x, canvas_y))
-        } else {
-            None
-        }
+        Some((canvas_x, canvas_y))
     }
 }
 
@@ -114,6 +113,24 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::PaletteRename => {
+            if let Event::Key(key) = event {
+                handle_text_input(app, key, TextInputPurpose::PaletteRename);
+            }
+            return;
+        }
+        AppMode::PaletteExport => {
+            if let Event::Key(key) = event {
+                handle_text_input(app, key, TextInputPurpose::PaletteExport);
+            }
+            return;
+        }
+        AppMode::NewCanvas => {
+            if let Event::Key(KeyEvent { code, .. }) = event {
+                handle_new_canvas(app, code);
+            }
+            return;
+        }
         _ => {}
     }
 
@@ -155,13 +172,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('n') => {
-                // New project
-                if app.dirty {
-                    app.mode = AppMode::Quitting;
-                    app.set_status("Unsaved changes. Quit? (y/n)");
-                } else {
-                    app.new_project();
-                }
+                // New canvas dialog
+                app.new_canvas_width = app.canvas.width;
+                app.new_canvas_height = app.canvas.height;
+                app.new_canvas_cursor = 0;
+                app.mode = AppMode::NewCanvas;
+                return;
+            }
+            KeyCode::Char('t') => {
+                app.cycle_theme();
                 return;
             }
             KeyCode::Char('e') => {
@@ -222,70 +241,83 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.set_status(&format!("Symmetry: {}", app.symmetry.label()));
         }
 
-        // Grid toggle
-        KeyCode::Char('g') | KeyCode::Char('G') => {
-            app.show_grid = !app.show_grid;
-            app.set_status(if app.show_grid { "Grid: On" } else { "Grid: Off" });
-        }
-
         // Preview toggle
         KeyCode::Tab => {
             app.show_preview = !app.show_preview;
         }
 
-        // Color selection by number: 1-9 → indices 0-8, 0 → index 9
+        // Quick color pick: 1-9 → curated palette slots 0-8, 0 → slot 9
         KeyCode::Char(c @ '1'..='9') => {
-            let idx = (c as u8) - b'1';
-            app.color = Color256(idx);
+            let n = (c as u8 - b'1') as usize;
+            app.quick_pick_color(n);
         }
         KeyCode::Char('0') => {
-            app.color = Color256(9);
+            app.quick_pick_color(9);
         }
 
-        _ if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            match key.code {
-                // Shift+1 through Shift+6 for colors 10-15
-                KeyCode::Char('!') => { app.color = Color256(10); }
-                KeyCode::Char('@') => { app.color = Color256(11); }
-                KeyCode::Char('#') => { app.color = Color256(12); }
-                KeyCode::Char('$') => { app.color = Color256(13); }
-                KeyCode::Char('%') => { app.color = Color256(14); }
-                KeyCode::Char('^') => { app.color = Color256(15); }
-                _ => {}
-            }
-        }
-
-        // Palette navigation
+        // Palette navigation (uses palette_layout)
         KeyCode::Up => {
-            let all = app.all_palette_colors();
-            if !all.is_empty() && app.palette_cursor > 0 {
+            if app.palette_cursor > 0 {
                 app.palette_cursor -= 1;
-                app.color = Color256(all[app.palette_cursor]);
-                app.ensure_palette_cursor_visible(32);
+                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = Color256(*idx);
+                }
+                app.ensure_palette_cursor_visible(15);
             }
         }
         KeyCode::Down => {
-            let all = app.all_palette_colors();
-            if !all.is_empty() && app.palette_cursor + 1 < all.len() {
+            if app.palette_cursor + 1 < app.palette_layout.len() {
                 app.palette_cursor += 1;
-                app.color = Color256(all[app.palette_cursor]);
-                app.ensure_palette_cursor_visible(32);
+                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = Color256(*idx);
+                }
+                app.ensure_palette_cursor_visible(15);
             }
         }
         KeyCode::Left => {
-            let all = app.all_palette_colors();
-            if !all.is_empty() && app.palette_cursor >= 6 {
+            if app.palette_cursor >= 6 {
                 app.palette_cursor -= 6;
-                app.color = Color256(all[app.palette_cursor]);
-                app.ensure_palette_cursor_visible(32);
+                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = Color256(*idx);
+                }
+                app.ensure_palette_cursor_visible(15);
             }
         }
         KeyCode::Right => {
-            let all = app.all_palette_colors();
-            if !all.is_empty() && app.palette_cursor + 6 < all.len() {
+            if app.palette_cursor + 6 < app.palette_layout.len() {
                 app.palette_cursor += 6;
-                app.color = Color256(all[app.palette_cursor]);
-                app.ensure_palette_cursor_visible(32);
+                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = Color256(*idx);
+                }
+                app.ensure_palette_cursor_visible(15);
+            }
+        }
+        // Enter on palette: toggle section header or select color
+        KeyCode::Enter => {
+            if let Some(item) = app.palette_layout.get(app.palette_cursor).copied() {
+                match item {
+                    PaletteItem::SectionHeader(section) => {
+                        match section {
+                            PaletteSection::Standard => {
+                                app.palette_sections.standard_expanded = !app.palette_sections.standard_expanded;
+                            }
+                            PaletteSection::HueGroups => {
+                                app.palette_sections.hue_expanded = !app.palette_sections.hue_expanded;
+                            }
+                            PaletteSection::Grayscale => {
+                                app.palette_sections.grayscale_expanded = !app.palette_sections.grayscale_expanded;
+                            }
+                        }
+                        app.rebuild_palette_layout();
+                        // Clamp cursor if layout shrank
+                        if app.palette_cursor >= app.palette_layout.len() {
+                            app.palette_cursor = app.palette_layout.len().saturating_sub(1);
+                        }
+                    }
+                    PaletteItem::Color(idx) => {
+                        app.color = Color256(idx);
+                    }
+                }
             }
         }
 
@@ -308,6 +340,11 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         // Add current color to active custom palette
         KeyCode::Char('a') | KeyCode::Char('A') => {
             app.add_color_to_custom_palette();
+        }
+
+        // Cycle block character type
+        KeyCode::Char('b') | KeyCode::Char('B') => {
+            app.cycle_block();
         }
 
         // Toggle filled/outline rectangle
@@ -399,6 +436,8 @@ enum TextInputPurpose {
     SaveAs,
     ExportFile,
     PaletteName,
+    PaletteRename,
+    PaletteExport,
 }
 
 fn handle_text_input(app: &mut App, key: KeyEvent, purpose: TextInputPurpose) {
@@ -419,6 +458,12 @@ fn handle_text_input(app: &mut App, key: KeyEvent, purpose: TextInputPurpose) {
                 }
                 TextInputPurpose::PaletteName => {
                     app.create_custom_palette(input.trim());
+                }
+                TextInputPurpose::PaletteRename => {
+                    app.rename_selected_palette(input.trim());
+                }
+                TextInputPurpose::PaletteExport => {
+                    app.export_selected_palette(input.trim());
                 }
             }
         }
@@ -499,6 +544,67 @@ fn handle_palette_dialog(app: &mut App, code: KeyCode) {
         KeyCode::Char('d') | KeyCode::Char('D') => {
             app.delete_selected_palette();
         }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if !app.palette_dialog_files.is_empty() {
+                // Pre-fill with current name (without .palette extension)
+                if let Some(filename) = app.palette_dialog_files.get(app.palette_dialog_selected) {
+                    app.text_input = filename.trim_end_matches(".palette").to_string();
+                }
+                app.mode = AppMode::PaletteRename;
+            }
+        }
+        KeyCode::Char('u') | KeyCode::Char('U') => {
+            app.duplicate_selected_palette();
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') => {
+            if !app.palette_dialog_files.is_empty() {
+                if let Some(filename) = app.palette_dialog_files.get(app.palette_dialog_selected) {
+                    app.text_input = filename.clone();
+                }
+                app.mode = AppMode::PaletteExport;
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_new_canvas(app: &mut App, code: KeyCode) {
+    use crate::canvas::{MIN_DIMENSION, MAX_DIMENSION};
+
+    match code {
+        KeyCode::Up | KeyCode::Down => {
+            app.new_canvas_cursor = 1 - app.new_canvas_cursor;
+        }
+        KeyCode::Left => {
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = app.new_canvas_width.saturating_sub(8).max(MIN_DIMENSION);
+            } else {
+                app.new_canvas_height = app.new_canvas_height.saturating_sub(8).max(MIN_DIMENSION);
+            }
+        }
+        KeyCode::Right => {
+            if app.new_canvas_cursor == 0 {
+                app.new_canvas_width = (app.new_canvas_width + 8).min(MAX_DIMENSION);
+            } else {
+                app.new_canvas_height = (app.new_canvas_height + 8).min(MAX_DIMENSION);
+            }
+        }
+        KeyCode::Enter => {
+            let w = app.new_canvas_width;
+            let h = app.new_canvas_height;
+            app.canvas = Canvas::new_with_size(w, h);
+            app.history = History::new();
+            app.dirty = false;
+            app.project_name = None;
+            app.project_path = None;
+            app.cursor = None;
+            app.tool_state = ToolState::Idle;
+            app.mode = AppMode::Normal;
+            app.set_status(&format!("New canvas {}x{}", w, h));
+        }
         KeyCode::Esc => {
             app.mode = AppMode::Normal;
         }
@@ -534,9 +640,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, canvas_area: &CanvasArea) {
         MouseEventKind::Down(MouseButton::Right) => {
             // Quick eyedropper
             if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row) {
-                if let Some((picked, _bg, _block)) = crate::tools::eyedropper(&app.canvas, x, y) {
+                if let Some((picked, _bg, block)) = crate::tools::eyedropper(&app.canvas, x, y) {
                     app.color = picked;
-                    app.set_status(&format!("Picked: {}", picked.name()));
+                    if block != crate::cell::BlockChar::Empty {
+                        app.active_block = block;
+                    }
+                    app.set_status(&format!("Picked: {} {}", picked.name(), block.to_char()));
                 }
             }
         }
