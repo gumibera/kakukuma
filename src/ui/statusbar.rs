@@ -45,13 +45,34 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(label, Style::default().fg(label_fg).bg(theme.panel_bg)));
         }
 
-        // Right group: help, quit, cursor position
+        // Right group: color swatch, tool, zoom, help, quit, cursor position
         let mut right_spans: Vec<Span> = Vec::new();
+
+        // Active color swatch
+        right_spans.push(Span::styled(
+            "  ",
+            Style::default().bg(app.color.to_ratatui()),
+        ));
+        right_spans.push(Span::styled(" ", Style::default().bg(theme.panel_bg)));
+
+        // Tool name
+        right_spans.push(Span::styled(
+            app.active_tool.name(),
+            Style::default().fg(Color::Gray).bg(theme.panel_bg),
+        ));
+        right_spans.push(Span::styled(" ", Style::default().bg(theme.panel_bg)));
+
+        // Zoom level
+        right_spans.push(Span::styled(
+            format!("{}x ", app.zoom),
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
+        ));
+
         for &(key, label) in &[("?", " Help "), ("Q", " Quit ")] {
             right_spans.push(Span::styled(key, Style::default().fg(Color::White).bg(theme.panel_bg)));
             right_spans.push(Span::styled(label, Style::default().fg(Color::Gray).bg(theme.panel_bg)));
         }
-        if let Some((x, y)) = app.cursor {
+        if let Some((x, y)) = app.effective_cursor() {
             right_spans.push(Span::styled(
                 format!("({},{}) ", x, y),
                 Style::default().fg(Color::Cyan).bg(theme.panel_bg),

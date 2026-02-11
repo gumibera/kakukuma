@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::canvas::Canvas;
-use crate::cell::Color256;
+use crate::cell::Rgb;
 use crate::symmetry::SymmetryMode;
 
 #[derive(Serialize, Deserialize)]
@@ -10,16 +10,16 @@ pub struct Project {
     pub name: String,
     pub created_at: String,
     pub modified_at: String,
-    pub color: Color256,
+    pub color: Rgb,
     pub symmetry: SymmetryMode,
     pub canvas: Canvas,
 }
 
 impl Project {
-    pub fn new(name: &str, canvas: Canvas, color: Color256, sym: SymmetryMode) -> Self {
+    pub fn new(name: &str, canvas: Canvas, color: Rgb, sym: SymmetryMode) -> Self {
         let now = now_iso8601();
         Project {
-            version: 3,
+            version: 5,
             name: name.to_string(),
             created_at: now.clone(),
             modified_at: now,
@@ -42,10 +42,10 @@ impl Project {
             .map_err(|e| format!("Read error: {}", e))?;
         let project: Project = serde_json::from_str(&data)
             .map_err(|e| format!("Parse error: {}", e))?;
-        // Accept v1 (legacy 16-color), v2 (256-color), v3 (dynamic canvas)
-        if project.version > 3 {
+        // Accept v1 (legacy 16-color), v2 (256-color), v3 (dynamic canvas), v4 (generic char), v5 (RGB)
+        if project.version > 5 {
             return Err(format!(
-                "File version {} is newer than supported (v3)",
+                "File version {} is newer than supported (v5)",
                 project.version
             ));
         }
@@ -127,43 +127,39 @@ fn days_to_date(days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
     use crate::canvas::Canvas;
-    use crate::cell::{BlockChar, Cell, Color256};
+    use crate::cell::{blocks, Cell, Rgb, color256_to_rgb};
 
     #[test]
     fn test_save_load_roundtrip() {
         let mut canvas = Canvas::new();
-        canvas.set(
-            5,
-            10,
-            Cell {
-                block: BlockChar::Full,
-                fg: Color256(1),
-                bg: Color256(4),
-            },
-        );
+        canvas.set(5, 10, Cell {
+            ch: blocks::FULL,
+            fg: Some(color256_to_rgb(1)),
+            bg: Some(color256_to_rgb(4)),
+        });
 
         let mut project = Project::new(
             "test-project",
             canvas,
-            Color256(2),
+            color256_to_rgb(2),
             SymmetryMode::Horizontal,
         );
 
         let dir = std::env::temp_dir();
-        let path = dir.join("kaku_test_roundtrip.kaku");
+        let path = dir.join("kaku_test_roundtrip_v5.kaku");
         project.save_to_file(&path).unwrap();
 
         let loaded = Project::load_from_file(&path).unwrap();
         assert_eq!(loaded.name, "test-project");
-        assert_eq!(loaded.color, Color256(2));
+        assert_eq!(loaded.color, color256_to_rgb(2));
         assert_eq!(loaded.symmetry, SymmetryMode::Horizontal);
-        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.version, 5);
         assert_eq!(
             loaded.canvas.get(5, 10),
             Some(Cell {
-                block: BlockChar::Full,
-                fg: Color256(1),
-                bg: Color256(4),
+                ch: blocks::FULL,
+                fg: Some(color256_to_rgb(1)),
+                bg: Some(color256_to_rgb(4)),
             })
         );
         assert_eq!(loaded.canvas.get(0, 0), Some(Cell::default()));
@@ -172,37 +168,33 @@ mod tests {
     }
 
     #[test]
-    fn test_save_load_256_color() {
+    fn test_save_load_rgb_color() {
         let mut canvas = Canvas::new();
-        canvas.set(
-            0,
-            0,
-            Cell {
-                block: BlockChar::Full,
-                fg: Color256(196),
-                bg: Color256(232),
-            },
-        );
+        canvas.set(0, 0, Cell {
+            ch: blocks::FULL,
+            fg: Some(Rgb::new(255, 0, 0)),
+            bg: Some(Rgb::new(0, 0, 255)),
+        });
 
         let mut project = Project::new(
             "color-test",
             canvas,
-            Color256(100),
+            Rgb::new(100, 200, 50),
             SymmetryMode::Off,
         );
 
         let dir = std::env::temp_dir();
-        let path = dir.join("kaku_test_256color.kaku");
+        let path = dir.join("kaku_test_rgb_color.kaku");
         project.save_to_file(&path).unwrap();
 
         let loaded = Project::load_from_file(&path).unwrap();
-        assert_eq!(loaded.color, Color256(100));
+        assert_eq!(loaded.color, Rgb::new(100, 200, 50));
         assert_eq!(
             loaded.canvas.get(0, 0),
             Some(Cell {
-                block: BlockChar::Full,
-                fg: Color256(196),
-                bg: Color256(232),
+                ch: blocks::FULL,
+                fg: Some(Rgb::new(255, 0, 0)),
+                bg: Some(Rgb::new(0, 0, 255)),
             })
         );
 
@@ -214,21 +206,25 @@ mod tests {
         // Build a valid v1-style project with string color name,
         // then patch the JSON to use the legacy "Green" format.
         let canvas = Canvas::new();
-        let mut project = Project::new("legacy-art", canvas, Color256(2), crate::symmetry::SymmetryMode::Off);
+        let mut project = Project::new("legacy-art", canvas, color256_to_rgb(2), crate::symmetry::SymmetryMode::Off);
         project.version = 1;
 
         let dir = std::env::temp_dir();
-        let path = dir.join("kaku_test_legacy_v1.kaku");
+        let path = dir.join("kaku_test_legacy_v1_rgb.kaku");
         project.save_to_file(&path).unwrap();
 
-        // Patch the saved JSON: replace numeric color with legacy string
+        // Patch the saved JSON: replace RGB array with legacy string
         let json = std::fs::read_to_string(&path).unwrap();
-        let patched = json.replacen("\"color\": 2", "\"color\": \"Green\"", 1);
+        let patched = json.replacen(
+            "\"color\": [\n    0,\n    205,\n    0\n  ]",
+            "\"color\": \"Green\"",
+            1,
+        );
         std::fs::write(&path, patched).unwrap();
 
         let loaded = Project::load_from_file(&path).unwrap();
         assert_eq!(loaded.name, "legacy-art");
-        assert_eq!(loaded.color, Color256(2)); // Green → index 2
+        assert_eq!(loaded.color, color256_to_rgb(2)); // Green → index 2
 
         let _ = std::fs::remove_file(&path);
     }
@@ -272,5 +268,126 @@ mod tests {
         assert!(found.unwrap().ends_with(".kaku.autosave"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- Cycle 15 QA: File I/O roundtrip tests ---
+
+    #[test]
+    fn test_roundtrip_shade_chars() {
+        let mut canvas = Canvas::new();
+        let shades = [blocks::SHADE_LIGHT, blocks::SHADE_MEDIUM, blocks::SHADE_DARK];
+        for (i, &ch) in shades.iter().enumerate() {
+            canvas.set(i, 0, Cell {
+                ch,
+                fg: Some(Rgb::new(200, 100, 50)),
+                bg: None,
+            });
+        }
+
+        let mut project = Project::new("shade-test", canvas, Rgb::WHITE, SymmetryMode::Off);
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_roundtrip_shades.kaku");
+        project.save_to_file(&path).unwrap();
+
+        let loaded = Project::load_from_file(&path).unwrap();
+        for (i, &ch) in shades.iter().enumerate() {
+            let cell = loaded.canvas.get(i, 0).unwrap();
+            assert_eq!(cell.ch, ch, "Shade char at position {} mismatch", i);
+            assert_eq!(cell.fg, Some(Rgb::new(200, 100, 50)));
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_fractional_fills() {
+        let mut canvas = Canvas::new();
+        let fills = [
+            blocks::LOWER_1_8, blocks::LOWER_1_4, blocks::LOWER_3_8,
+            blocks::LEFT_7_8, blocks::LEFT_3_4, blocks::LEFT_1_8,
+        ];
+        for (i, &ch) in fills.iter().enumerate() {
+            canvas.set(i, 0, Cell {
+                ch,
+                fg: Some(Rgb::new(0, 255, 0)),
+                bg: None,
+            });
+        }
+
+        let mut project = Project::new("fill-test", canvas, Rgb::WHITE, SymmetryMode::Off);
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_roundtrip_fills.kaku");
+        project.save_to_file(&path).unwrap();
+
+        let loaded = Project::load_from_file(&path).unwrap();
+        for (i, &ch) in fills.iter().enumerate() {
+            let cell = loaded.canvas.get(i, 0).unwrap();
+            assert_eq!(cell.ch, ch, "Fill char at position {} mismatch", i);
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_all_block_types() {
+        let mut canvas = Canvas::new();
+        for (i, &ch) in blocks::ALL.iter().enumerate() {
+            canvas.set(i, 0, Cell {
+                ch,
+                fg: Some(Rgb::new(128, 64, 32)),
+                bg: if i % 2 == 0 { Some(Rgb::new(10, 20, 30)) } else { None },
+            });
+        }
+
+        let mut project = Project::new("all-blocks", canvas, Rgb::WHITE, SymmetryMode::Off);
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_roundtrip_all_blocks.kaku");
+        project.save_to_file(&path).unwrap();
+
+        let loaded = Project::load_from_file(&path).unwrap();
+        for (i, &ch) in blocks::ALL.iter().enumerate() {
+            let cell = loaded.canvas.get(i, 0).unwrap();
+            assert_eq!(cell.ch, ch, "Block {} at position {} mismatch", ch, i);
+            assert_eq!(cell.fg, Some(Rgb::new(128, 64, 32)));
+            if i % 2 == 0 {
+                assert_eq!(cell.bg, Some(Rgb::new(10, 20, 30)));
+            } else {
+                assert_eq!(cell.bg, None);
+            }
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_roundtrip_colors_exact() {
+        let mut canvas = Canvas::new();
+        let colors = [
+            (Rgb::new(0, 0, 0), Rgb::new(255, 255, 255)),
+            (Rgb::new(127, 127, 127), Rgb::new(1, 2, 3)),
+            (Rgb::new(255, 0, 128), Rgb::new(0, 128, 255)),
+        ];
+        for (i, (fg, bg)) in colors.iter().enumerate() {
+            canvas.set(i, 0, Cell {
+                ch: blocks::FULL,
+                fg: Some(*fg),
+                bg: Some(*bg),
+            });
+        }
+
+        let mut project = Project::new("color-exact", canvas, Rgb::new(42, 43, 44), SymmetryMode::Off);
+        let dir = std::env::temp_dir();
+        let path = dir.join("kaku_test_roundtrip_colors_exact.kaku");
+        project.save_to_file(&path).unwrap();
+
+        let loaded = Project::load_from_file(&path).unwrap();
+        assert_eq!(loaded.color, Rgb::new(42, 43, 44));
+        for (i, (fg, bg)) in colors.iter().enumerate() {
+            let cell = loaded.canvas.get(i, 0).unwrap();
+            assert_eq!(cell.fg, Some(*fg), "fg mismatch at {}", i);
+            assert_eq!(cell.bg, Some(*bg), "bg mismatch at {}", i);
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::canvas::{self, Canvas};
-use crate::cell::Color256;
-use crate::cell::BlockChar;
-use crate::export;
+use crate::cell::{blocks, Rgb, next_primary, next_shade};
+use crate::export::{self, ColorFormat};
 use crate::history::{CellMutation, History};
 use crate::project::Project;
 use crate::symmetry::{self, SymmetryMode};
@@ -27,6 +26,8 @@ pub enum AppMode {
     PaletteRename,
     PaletteExport,
     NewCanvas,
+    HexColorInput,
+    BlockPicker,
 }
 
 pub struct StatusMessage {
@@ -43,11 +44,11 @@ pub struct PaletteSectionState {
 pub struct App {
     pub canvas: Canvas,
     pub active_tool: ToolKind,
-    pub color: Color256,
+    pub color: Rgb,
     pub symmetry: SymmetryMode,
     pub history: History,
     pub cursor: Option<(usize, usize)>,
-    pub show_preview: bool,
+    pub zoom: u8,
     pub tool_state: ToolState,
     pub mode: AppMode,
     pub dirty: bool,
@@ -63,8 +64,10 @@ pub struct App {
     pub export_format: usize,
     // Export dialog state: 0=Clipboard, 1=File
     pub export_dest: usize,
-    // Export dialog cursor row: 0=format, 1=dest
+    // Export dialog cursor row: 0=format, 1=dest, 2=color_format (when ANSI)
     pub export_cursor: usize,
+    // Export color format: 0=24bit, 1=256, 2=16 (only used when ANSI)
+    pub export_color_format: usize,
     // Shared text input for SaveAs and ExportFile modes
     pub text_input: String,
     // Auto-save tick counter (increments each tick, resets on save)
@@ -72,7 +75,7 @@ pub struct App {
     // Path of autosave file found on startup
     pub recovery_path: Option<String>,
     // Recent colors (auto-tracked, last 8 unique)
-    pub recent_colors: Vec<Color256>,
+    pub recent_colors: Vec<Rgb>,
     // Palette browser state
     pub hue_groups: Vec<HueGroup>,
     pub palette_scroll: usize,
@@ -87,7 +90,7 @@ pub struct App {
     pub palette_dialog_files: Vec<String>,
     pub palette_dialog_selected: usize,
     // Active block character for drawing
-    pub active_block: BlockChar,
+    pub active_block: char,
     // Palette section collapse state
     pub palette_sections: PaletteSectionState,
     // Flattened palette layout for cursor navigation
@@ -98,6 +101,17 @@ pub struct App {
     pub new_canvas_width: usize,
     pub new_canvas_height: usize,
     pub new_canvas_cursor: u8, // 0=width, 1=height
+    // Keyboard canvas cursor
+    pub canvas_cursor: (usize, usize),
+    pub canvas_cursor_active: bool,
+    // Viewport offset and last-known dimensions for large canvases
+    pub viewport_x: usize,
+    pub viewport_y: usize,
+    pub viewport_w: usize,
+    pub viewport_h: usize,
+    // Block picker dialog cursor
+    pub block_picker_row: usize,
+    pub block_picker_col: usize,
 }
 
 impl App {
@@ -105,11 +119,11 @@ impl App {
         let mut app = App {
             canvas: Canvas::new(),
             active_tool: ToolKind::Pencil,
-            color: Color256::WHITE,
+            color: Rgb::WHITE,
             symmetry: SymmetryMode::Off,
             history: History::new(),
             cursor: None,
-            show_preview: false,
+            zoom: 1,
             tool_state: ToolState::Idle,
             mode: AppMode::Normal,
             dirty: false,
@@ -123,6 +137,7 @@ impl App {
             export_format: 0,
             export_dest: 0,
             export_cursor: 0,
+            export_color_format: 0,
             text_input: String::new(),
             auto_save_ticks: 0,
             recovery_path: None,
@@ -137,7 +152,7 @@ impl App {
             custom_palette: None,
             palette_dialog_files: Vec::new(),
             palette_dialog_selected: 0,
-            active_block: BlockChar::Full,
+            active_block: blocks::FULL,
             palette_sections: PaletteSectionState {
                 standard_expanded: false,
                 hue_expanded: false,
@@ -148,6 +163,14 @@ impl App {
             new_canvas_width: canvas::DEFAULT_WIDTH,
             new_canvas_height: canvas::DEFAULT_HEIGHT,
             new_canvas_cursor: 0,
+            canvas_cursor: (0, 0),
+            canvas_cursor_active: false,
+            viewport_x: 0,
+            viewport_y: 0,
+            viewport_w: 48,
+            viewport_h: 32,
+            block_picker_row: 0,
+            block_picker_col: 0,
         };
         app.rebuild_palette_layout();
         app
@@ -173,7 +196,7 @@ impl App {
         layout.push(PaletteItem::SectionHeader(PaletteSection::Standard));
         if self.palette_sections.standard_expanded {
             for i in 0..16u8 {
-                layout.push(PaletteItem::Color(i));
+                layout.push(PaletteItem::Color(crate::cell::color256_to_rgb(i)));
             }
         }
 
@@ -191,7 +214,7 @@ impl App {
         layout.push(PaletteItem::SectionHeader(PaletteSection::Grayscale));
         if self.palette_sections.grayscale_expanded {
             for i in 232..=255u8 {
-                layout.push(PaletteItem::Color(i));
+                layout.push(PaletteItem::Color(crate::cell::color256_to_rgb(i)));
             }
         }
 
@@ -207,15 +230,49 @@ impl App {
         self.set_status(&format!("Theme: {}", self.theme().name));
     }
 
+    pub fn cycle_zoom(&mut self) {
+        self.zoom = match self.zoom {
+            1 => 2,
+            2 => 4,
+            _ => 1,
+        };
+        self.set_status(&format!("Zoom: {}x", self.zoom));
+    }
+
+    /// Returns the effective cursor position: keyboard canvas cursor if active,
+    /// otherwise the mouse hover cursor.
+    pub fn effective_cursor(&self) -> Option<(usize, usize)> {
+        if self.canvas_cursor_active {
+            Some(self.canvas_cursor)
+        } else {
+            self.cursor
+        }
+    }
+
+    /// Adjusts viewport so that the given canvas coordinate is visible.
+    /// `vw` and `vh` are the viewport dimensions in canvas cells.
+    pub fn ensure_cursor_in_viewport(&mut self, cx: usize, cy: usize, vw: usize, vh: usize) {
+        if cx < self.viewport_x {
+            self.viewport_x = cx;
+        } else if cx >= self.viewport_x + vw {
+            self.viewport_x = cx.saturating_sub(vw.saturating_sub(1));
+        }
+        if cy < self.viewport_y {
+            self.viewport_y = cy;
+        } else if cy >= self.viewport_y + vh {
+            self.viewport_y = cy.saturating_sub(vh.saturating_sub(1));
+        }
+    }
+
     /// Quick-pick the Nth curated palette color (0-indexed).
     /// Returns true if a color was picked.
     pub fn quick_pick_color(&mut self, n: usize) -> bool {
         let mut count = 0;
         for (i, item) in self.palette_layout.iter().enumerate() {
             match item {
-                PaletteItem::Color(idx) => {
+                PaletteItem::Color(color) => {
                     if count == n {
-                        self.color = Color256(*idx);
+                        self.color = *color;
                         self.palette_cursor = i;
                         return true;
                     }
@@ -257,14 +314,42 @@ impl App {
         }
     }
 
-    /// Cycle to the next drawable block character.
+    /// Cycle to the next primary block character (B key).
     pub fn cycle_block(&mut self) {
-        self.active_block = self.active_block.next();
-        self.set_status(&format!("Block: {}", self.active_block.to_char()));
+        self.active_block = next_primary(self.active_block);
+        self.set_status(&format!("Block: {}", self.active_block));
+    }
+
+    /// Cycle to the next shade block character (G key).
+    pub fn cycle_shade(&mut self) {
+        self.active_block = next_shade(self.active_block);
+        self.set_status(&format!("Block: {}", self.active_block));
+    }
+
+    /// Open the block picker dialog (Shift+B).
+    pub fn open_block_picker(&mut self) {
+        // Position picker cursor on the currently active block
+        let mut row = 0usize;
+        let mut col = 0usize;
+        let mut offset = 0usize;
+        for (r, &size) in blocks::CATEGORY_SIZES.iter().enumerate() {
+            if let Some(pos) = blocks::ALL[offset..offset + size]
+                .iter()
+                .position(|&c| c == self.active_block)
+            {
+                row = r;
+                col = pos;
+                break;
+            }
+            offset += size;
+        }
+        self.block_picker_row = row;
+        self.block_picker_col = col;
+        self.mode = AppMode::BlockPicker;
     }
 
     /// Track a color in the recent colors list.
-    fn track_recent_color(&mut self, color: Color256) {
+    fn track_recent_color(&mut self, color: Rgb) {
         // Remove if already present (to move it to front)
         self.recent_colors.retain(|&c| c != color);
         // Push to front
@@ -275,26 +360,28 @@ impl App {
 
     /// Apply a tool action at (x, y), handling symmetry and history.
     pub fn apply_tool(&mut self, x: usize, y: usize) {
-        let fg = self.color;
-        let bg = Color256::BLACK;
+        let fg = Some(self.color);
+        let bg = None;
         let mutations = match self.active_tool {
             ToolKind::Pencil => {
-                self.track_recent_color(fg);
+                self.track_recent_color(self.color);
                 tools::pencil(&self.canvas, x, y, self.active_block, fg, bg)
             }
             ToolKind::Eraser => tools::eraser(&self.canvas, x, y),
             ToolKind::Fill => {
-                self.track_recent_color(fg);
+                self.track_recent_color(self.color);
                 tools::flood_fill(&self.canvas, x, y, self.active_block, fg, bg)
             }
             ToolKind::Eyedropper => {
-                if let Some((picked, _bg, block)) = tools::eyedropper(&self.canvas, x, y) {
-                    self.color = picked;
-                    if block != BlockChar::Empty {
-                        self.active_block = block;
+                if let Some((picked_fg, _bg, ch)) = tools::eyedropper(&self.canvas, x, y) {
+                    if let Some(picked) = picked_fg {
+                        self.color = picked;
+                        self.track_recent_color(picked);
+                        self.set_status(&format!("Picked: {} {}", picked.name(), ch));
                     }
-                    self.track_recent_color(picked);
-                    self.set_status(&format!("Picked: {} {}", picked.name(), block.to_char()));
+                    if ch != ' ' {
+                        self.active_block = ch;
+                    }
                 }
                 return;
             }
@@ -307,7 +394,7 @@ impl App {
                     }
                     ToolState::LineStart { x: x0, y: y0 } => {
                         self.tool_state = ToolState::Idle;
-                        self.track_recent_color(fg);
+                        self.track_recent_color(self.color);
                         tools::line(&self.canvas, x0, y0, x, y, self.active_block, fg, bg)
                     }
                     _ => return,
@@ -322,7 +409,7 @@ impl App {
                     }
                     ToolState::RectStart { x: x0, y: y0 } => {
                         self.tool_state = ToolState::Idle;
-                        self.track_recent_color(fg);
+                        self.track_recent_color(self.color);
                         tools::rectangle(
                             &self.canvas, x0, y0, x, y, self.active_block, fg, bg,
                             self.filled_rect,
@@ -348,7 +435,7 @@ impl App {
             .filter_map(|mut m| {
                 if let Some(actual_old) = self.canvas.get(m.x, m.y) {
                     m.old = actual_old;
-                    m.new = tools::compose_cell(actual_old, m.new.block, m.new.fg, m.new.bg);
+                    m.new = tools::compose_cell(actual_old, m.new.ch, m.new.fg, m.new.bg);
                     if m.old != m.new { Some(m) } else { None }
                 } else {
                     None
@@ -546,9 +633,8 @@ impl App {
         let color = self.color;
         match self.custom_palette {
             Some(ref mut cp) => {
-                let idx = color.0;
-                if !cp.colors.contains(&idx) {
-                    cp.colors.push(idx);
+                if !cp.colors.contains(&color) {
+                    cp.colors.push(color);
                     let filename = format!("{}.palette", cp.name);
                     let _ = palette::save_palette(cp, Path::new(&filename));
                     let msg = format!("Added {} to {}", color.name(), cp.name);
@@ -638,12 +724,21 @@ impl App {
         }
     }
 
+    /// Convert the export_color_format index to a ColorFormat enum.
+    fn color_format(&self) -> ColorFormat {
+        match self.export_color_format {
+            1 => ColorFormat::Color256,
+            2 => ColorFormat::Color16,
+            _ => ColorFormat::TrueColor,
+        }
+    }
+
     /// Execute the current export dialog selection.
     pub fn do_export(&mut self) {
         let content = if self.export_format == 0 {
             export::to_plain_text(&self.canvas)
         } else {
-            export::to_ansi(&self.canvas)
+            export::to_ansi(&self.canvas, self.color_format())
         };
 
         if self.export_dest == 0 {
@@ -681,7 +776,7 @@ impl App {
         let content = if self.export_format == 0 {
             export::to_plain_text(&self.canvas)
         } else {
-            export::to_ansi(&self.canvas)
+            export::to_ansi(&self.canvas, self.color_format())
         };
         match std::fs::write(filename, &content) {
             Ok(()) => self.set_status(&format!("Exported to {}", filename)),
@@ -760,5 +855,22 @@ impl App {
 impl Default for App {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cycle_zoom() {
+        let mut app = App::new();
+        assert_eq!(app.zoom, 1);
+        app.cycle_zoom();
+        assert_eq!(app.zoom, 2);
+        app.cycle_zoom();
+        assert_eq!(app.zoom, 4);
+        app.cycle_zoom();
+        assert_eq!(app.zoom, 1);
     }
 }

@@ -1,5 +1,5 @@
 use crate::canvas::Canvas;
-use crate::cell::{BlockChar, Cell, Color256};
+use crate::cell::{Cell, Rgb};
 use crate::history::CellMutation;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,12 +68,12 @@ pub fn pencil(
     canvas: &Canvas,
     x: usize,
     y: usize,
-    block: BlockChar,
-    fg: Color256,
-    bg: Color256,
+    ch: char,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) -> Vec<CellMutation> {
     if let Some(old) = canvas.get(x, y) {
-        let new = Cell { block, fg, bg };
+        let new = Cell { ch, fg, bg };
         if old != new {
             vec![CellMutation { x, y, old, new }]
         } else {
@@ -137,12 +137,12 @@ pub fn line(
     y0: usize,
     x1: usize,
     y1: usize,
-    block: BlockChar,
-    fg: Color256,
-    bg: Color256,
+    ch: char,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) -> Vec<CellMutation> {
     let points = bresenham_line(x0, y0, x1, y1);
-    let new = Cell { block, fg, bg };
+    let new = Cell { ch, fg, bg };
     let mut mutations = Vec::new();
     for (x, y) in points {
         if let Some(old) = canvas.get(x, y) {
@@ -162,16 +162,16 @@ pub fn rectangle(
     y0: usize,
     x1: usize,
     y1: usize,
-    block: BlockChar,
-    fg: Color256,
-    bg: Color256,
+    ch: char,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
     filled: bool,
 ) -> Vec<CellMutation> {
     let min_x = x0.min(x1);
     let max_x = x0.max(x1);
     let min_y = y0.min(y1);
     let max_y = y0.max(y1);
-    let new = Cell { block, fg, bg };
+    let new = Cell { ch, fg, bg };
     let mut mutations = Vec::new();
 
     for y in min_y..=max_y {
@@ -194,16 +194,16 @@ pub fn flood_fill(
     canvas: &Canvas,
     start_x: usize,
     start_y: usize,
-    block: BlockChar,
-    fg: Color256,
-    bg: Color256,
+    ch: char,
+    fg: Option<Rgb>,
+    bg: Option<Rgb>,
 ) -> Vec<CellMutation> {
     let target = match canvas.get(start_x, start_y) {
         Some(cell) => cell,
         None => return vec![],
     };
 
-    let new = Cell { block, fg, bg };
+    let new = Cell { ch, fg, bg };
     if target == new {
         return vec![]; // No-op: already the target color
     }
@@ -252,19 +252,28 @@ pub fn flood_fill(
 }
 
 /// Pick color from a canvas cell.
-pub fn eyedropper(canvas: &Canvas, x: usize, y: usize) -> Option<(Color256, Color256, BlockChar)> {
-    canvas.get(x, y).map(|cell| (cell.fg, cell.bg, cell.block))
+pub fn eyedropper(canvas: &Canvas, x: usize, y: usize) -> Option<(Option<Rgb>, Option<Rgb>, char)> {
+    canvas.get(x, y).map(|cell| (cell.fg, cell.bg, cell.ch))
 }
 
 /// Compose a new cell from a drawing operation. All block types replace the
 /// cell entirely — half-blocks stamp cleanly with the uncovered half transparent.
-pub fn compose_cell(_existing: Cell, new_block: BlockChar, new_fg: Color256, new_bg: Color256) -> Cell {
-    Cell { block: new_block, fg: new_fg, bg: new_bg }
+pub fn compose_cell(_existing: Cell, new_ch: char, new_fg: Option<Rgb>, new_bg: Option<Rgb>) -> Cell {
+    Cell { ch: new_ch, fg: new_fg, bg: new_bg }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::blocks;
+
+    const RED: Option<Rgb> = Some(Rgb { r: 205, g: 0, b: 0 });
+    const BLUE: Option<Rgb> = Some(Rgb { r: 0, g: 0, b: 238 });
+    const GREEN: Option<Rgb> = Some(Rgb { r: 0, g: 205, b: 0 });
+
+    fn empty_cell() -> Cell {
+        Cell::default()
+    }
 
     #[test]
     fn test_bresenham_horizontal() {
@@ -340,7 +349,7 @@ mod tests {
         let canvas = Canvas::new();
         let mutations = rectangle(
             &canvas, 5, 5, 5, 5,
-            BlockChar::Full, Color256(1), Color256::BLACK, false,
+            blocks::FULL, RED, None, false,
         );
         assert_eq!(mutations.len(), 1);
         assert_eq!(mutations[0].x, 5);
@@ -352,7 +361,7 @@ mod tests {
         let canvas = Canvas::new();
         let mutations = rectangle(
             &canvas, 0, 0, 9, 0,
-            BlockChar::Full, Color256(1), Color256::BLACK, false,
+            blocks::FULL, RED, None, false,
         );
         assert_eq!(mutations.len(), 10);
     }
@@ -362,7 +371,7 @@ mod tests {
         let canvas = Canvas::new();
         let mutations = rectangle(
             &canvas, 0, 0, 0, 7,
-            BlockChar::Full, Color256(1), Color256::BLACK, false,
+            blocks::FULL, RED, None, false,
         );
         assert_eq!(mutations.len(), 8);
     }
@@ -371,9 +380,9 @@ mod tests {
     fn test_flood_fill_boundary() {
         let mut canvas = Canvas::new();
         let wall = Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256::BLACK,
+            ch: blocks::FULL,
+            fg: RED,
+            bg: None,
         };
         for x in 0..3 {
             canvas.set(x, 0, wall);
@@ -381,7 +390,7 @@ mod tests {
         }
         canvas.set(0, 1, wall);
         canvas.set(2, 1, wall);
-        let mutations = flood_fill(&canvas, 1, 1, BlockChar::Full, Color256(4), Color256::BLACK);
+        let mutations = flood_fill(&canvas, 1, 1, blocks::FULL, BLUE, None);
         assert_eq!(mutations.len(), 1);
         assert_eq!(mutations[0].x, 1);
         assert_eq!(mutations[0].y, 1);
@@ -394,9 +403,9 @@ mod tests {
             &canvas,
             0,
             0,
-            BlockChar::Empty,
-            Color256::WHITE,
-            Color256::BLACK,
+            ' ',
+            Some(Rgb::WHITE),
+            None,
         );
         assert_eq!(mutations.len(), 0);
     }
@@ -408,11 +417,11 @@ mod tests {
             &canvas,
             0,
             0,
-            BlockChar::Full,
-            Color256(1),
-            Color256::BLACK,
+            blocks::FULL,
+            RED,
+            None,
         );
-        assert_eq!(mutations.len(), 32 * 32);
+        assert_eq!(mutations.len(), canvas.width * canvas.height);
     }
 
     #[test]
@@ -424,9 +433,9 @@ mod tests {
             0,
             3,
             3,
-            BlockChar::Full,
-            Color256(1),
-            Color256::BLACK,
+            blocks::FULL,
+            RED,
+            None,
             false,
         );
         assert_eq!(mutations.len(), 12);
@@ -441,9 +450,9 @@ mod tests {
             0,
             3,
             3,
-            BlockChar::Full,
-            Color256(1),
-            Color256::BLACK,
+            blocks::FULL,
+            RED,
+            None,
             true,
         );
         assert_eq!(mutations.len(), 16);
@@ -451,143 +460,161 @@ mod tests {
 
     // --- compose_cell tests ---
 
-    const RED: Color256 = Color256(1);
-    const BLUE: Color256 = Color256(4);
-    const GREEN: Color256 = Color256(2);
-
-    fn empty_cell() -> Cell {
-        Cell::default() // Empty, fg=White, bg=Black
-    }
-
     #[test]
     fn compose_full_block_replaces_entirely() {
-        let existing = Cell { block: BlockChar::UpperHalf, fg: RED, bg: BLUE };
-        let result = compose_cell(existing, BlockChar::Full, GREEN, Color256::BLACK);
-        assert_eq!(result, Cell { block: BlockChar::Full, fg: GREEN, bg: Color256::BLACK });
+        let existing = Cell { ch: blocks::UPPER_HALF, fg: RED, bg: BLUE };
+        let result = compose_cell(existing, blocks::FULL, GREEN, None);
+        assert_eq!(result, Cell { ch: blocks::FULL, fg: GREEN, bg: None });
     }
 
     #[test]
     fn compose_empty_block_replaces_entirely() {
-        let existing = Cell { block: BlockChar::Full, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::Empty, Color256::WHITE, Color256::BLACK);
-        assert_eq!(result, Cell { block: BlockChar::Empty, fg: Color256::WHITE, bg: Color256::BLACK });
+        let existing = Cell { ch: blocks::FULL, fg: RED, bg: None };
+        let result = compose_cell(existing, ' ', Some(Rgb::WHITE), None);
+        assert_eq!(result, Cell { ch: ' ', fg: Some(Rgb::WHITE), bg: None });
     }
 
     #[test]
     fn compose_upper_half_on_empty() {
-        let result = compose_cell(empty_cell(), BlockChar::UpperHalf, RED, Color256::BLACK);
-        // Top=RED, Bottom=BLACK (from empty bg) → UpperHalf(RED, BLACK)
-        assert_eq!(result.block, BlockChar::UpperHalf);
+        let result = compose_cell(empty_cell(), blocks::UPPER_HALF, RED, None);
+        assert_eq!(result.ch, blocks::UPPER_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_lower_half_on_empty() {
-        let result = compose_cell(empty_cell(), BlockChar::LowerHalf, RED, Color256::BLACK);
-        // Replace: LowerHalf(RED, BLACK)
-        assert_eq!(result.block, BlockChar::LowerHalf);
+        let result = compose_cell(empty_cell(), blocks::LOWER_HALF, RED, None);
+        assert_eq!(result.ch, blocks::LOWER_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_upper_red_then_lower_blue() {
-        // Existing: UpperHalf red — ignored, replace with LowerHalf blue
-        let existing = Cell { block: BlockChar::UpperHalf, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::LowerHalf, BLUE, Color256::BLACK);
-        // Replace: LowerHalf(BLUE, BLACK)
-        assert_eq!(result.block, BlockChar::LowerHalf);
+        let existing = Cell { ch: blocks::UPPER_HALF, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::LOWER_HALF, BLUE, None);
+        assert_eq!(result.ch, blocks::LOWER_HALF);
         assert_eq!(result.fg, BLUE);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_lower_blue_then_upper_red() {
-        // Existing: LowerHalf blue — ignored, replace with UpperHalf red
-        let existing = Cell { block: BlockChar::LowerHalf, fg: BLUE, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::UpperHalf, RED, Color256::BLACK);
-        // Replace: UpperHalf(RED, BLACK)
-        assert_eq!(result.block, BlockChar::UpperHalf);
+        let existing = Cell { ch: blocks::LOWER_HALF, fg: BLUE, bg: None };
+        let result = compose_cell(existing, blocks::UPPER_HALF, RED, None);
+        assert_eq!(result.ch, blocks::UPPER_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_lower_half_replaces_regardless_of_existing() {
-        let existing = Cell { block: BlockChar::UpperHalf, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::LowerHalf, RED, Color256::BLACK);
-        // Replace: LowerHalf(RED, BLACK) — no collapse to Full
-        assert_eq!(result.block, BlockChar::LowerHalf);
+        let existing = Cell { ch: blocks::UPPER_HALF, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::LOWER_HALF, RED, None);
+        assert_eq!(result.ch, blocks::LOWER_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_left_half_on_empty() {
-        let result = compose_cell(empty_cell(), BlockChar::LeftHalf, RED, Color256::BLACK);
-        // Left=RED, Right=BLACK → LeftHalf(RED, BLACK)
-        assert_eq!(result.block, BlockChar::LeftHalf);
+        let result = compose_cell(empty_cell(), blocks::LEFT_HALF, RED, None);
+        assert_eq!(result.ch, blocks::LEFT_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_right_half_on_empty() {
-        let result = compose_cell(empty_cell(), BlockChar::RightHalf, RED, Color256::BLACK);
-        // Replace: RightHalf(RED, BLACK)
-        assert_eq!(result.block, BlockChar::RightHalf);
+        let result = compose_cell(empty_cell(), blocks::RIGHT_HALF, RED, None);
+        assert_eq!(result.ch, blocks::RIGHT_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_left_then_right_horizontal() {
-        // Existing: LeftHalf red — ignored, replace with RightHalf blue
-        let existing = Cell { block: BlockChar::LeftHalf, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::RightHalf, BLUE, Color256::BLACK);
-        // Replace: RightHalf(BLUE, BLACK)
-        assert_eq!(result.block, BlockChar::RightHalf);
+        let existing = Cell { ch: blocks::LEFT_HALF, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::RIGHT_HALF, BLUE, None);
+        assert_eq!(result.ch, blocks::RIGHT_HALF);
         assert_eq!(result.fg, BLUE);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_right_half_replaces_regardless_of_existing() {
-        let existing = Cell { block: BlockChar::LeftHalf, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::RightHalf, RED, Color256::BLACK);
-        // Replace: RightHalf(RED, BLACK) — no collapse to Full
-        assert_eq!(result.block, BlockChar::RightHalf);
+        let existing = Cell { ch: blocks::LEFT_HALF, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::RIGHT_HALF, RED, None);
+        assert_eq!(result.ch, blocks::RIGHT_HALF);
         assert_eq!(result.fg, RED);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_cross_axis_replaces_entirely() {
-        // Existing: LeftHalf(RED, BLACK) — ignored, replace with UpperHalf blue
-        let existing = Cell { block: BlockChar::LeftHalf, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::UpperHalf, BLUE, Color256::BLACK);
-        // Replace: UpperHalf(BLUE, BLACK)
-        assert_eq!(result.block, BlockChar::UpperHalf);
+        let existing = Cell { ch: blocks::LEFT_HALF, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::UPPER_HALF, BLUE, None);
+        assert_eq!(result.ch, blocks::UPPER_HALF);
         assert_eq!(result.fg, BLUE);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_half_on_full_replaces_entirely() {
-        let existing = Cell { block: BlockChar::Full, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::UpperHalf, BLUE, Color256::BLACK);
-        // Replace: UpperHalf(BLUE, BLACK) — no color bleed from existing
-        assert_eq!(result.block, BlockChar::UpperHalf);
+        let existing = Cell { ch: blocks::FULL, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::UPPER_HALF, BLUE, None);
+        assert_eq!(result.ch, blocks::UPPER_HALF);
         assert_eq!(result.fg, BLUE);
-        assert_eq!(result.bg, Color256::BLACK);
+        assert_eq!(result.bg, None);
     }
 
     #[test]
     fn compose_idempotent_same_half_same_color() {
-        let existing = Cell { block: BlockChar::UpperHalf, fg: RED, bg: Color256::BLACK };
-        let result = compose_cell(existing, BlockChar::UpperHalf, RED, Color256::BLACK);
-        // Replace: same result — still idempotent
+        let existing = Cell { ch: blocks::UPPER_HALF, fg: RED, bg: None };
+        let result = compose_cell(existing, blocks::UPPER_HALF, RED, None);
         assert_eq!(result, existing);
+    }
+
+    // --- Cycle 15 QA: Shade character tool tests ---
+
+    #[test]
+    fn test_pencil_shade_char() {
+        let mut canvas = Canvas::new();
+        let mutations = pencil(&canvas, 3, 5, blocks::SHADE_LIGHT, RED, None);
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].new.ch, blocks::SHADE_LIGHT);
+        assert_eq!(mutations[0].new.fg, RED);
+        for m in &mutations {
+            canvas.set(m.x, m.y, m.new);
+        }
+        let cell = canvas.get(3, 5).unwrap();
+        assert_eq!(cell.ch, blocks::SHADE_LIGHT);
+    }
+
+    #[test]
+    fn test_fill_shade_char() {
+        let mut canvas = Canvas::new();
+        // Fill entire empty region with shade char
+        let mutations = flood_fill(&canvas, 0, 0, blocks::SHADE_MEDIUM, RED, None);
+        assert!(!mutations.is_empty(), "Fill should produce mutations");
+        // All mutations should use shade char
+        for m in &mutations {
+            assert_eq!(m.new.ch, blocks::SHADE_MEDIUM);
+            assert_eq!(m.new.fg, RED);
+        }
+    }
+
+    #[test]
+    fn test_eraser_shade_cell() {
+        let mut canvas = Canvas::new();
+        // Place a shade char
+        canvas.set(2, 3, Cell { ch: blocks::SHADE_DARK, fg: RED, bg: None });
+        // Erase it
+        let mutations = eraser(&canvas, 2, 3);
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].new.ch, ' ');
+        assert_eq!(mutations[0].new.fg, Some(Rgb::WHITE));
+        assert_eq!(mutations[0].new.bg, None);
     }
 }

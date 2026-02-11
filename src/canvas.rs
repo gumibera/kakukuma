@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::Cell;
 
-pub const DEFAULT_WIDTH: usize = 32;
+pub const DEFAULT_WIDTH: usize = 48;
 pub const DEFAULT_HEIGHT: usize = 32;
 pub const MIN_DIMENSION: usize = 8;
 pub const MAX_DIMENSION: usize = 128;
@@ -79,7 +79,10 @@ impl Default for Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::{BlockChar, Color256};
+    use crate::cell::{blocks, Rgb};
+
+    const RED: Option<Rgb> = Some(Rgb { r: 205, g: 0, b: 0 });
+    const BLUE: Option<Rgb> = Some(Rgb { r: 0, g: 0, b: 238 });
 
     #[test]
     fn test_new_canvas_is_empty() {
@@ -117,9 +120,9 @@ mod tests {
     fn test_get_set() {
         let mut canvas = Canvas::new();
         let cell = Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256(4),
+            ch: blocks::FULL,
+            fg: RED,
+            bg: BLUE,
         };
         canvas.set(5, 10, cell);
         assert_eq!(canvas.get(5, 10), Some(cell));
@@ -128,8 +131,8 @@ mod tests {
     #[test]
     fn test_out_of_bounds_get() {
         let canvas = Canvas::new();
-        assert_eq!(canvas.get(32, 0), None);
-        assert_eq!(canvas.get(0, 32), None);
+        assert_eq!(canvas.get(DEFAULT_WIDTH, 0), None);
+        assert_eq!(canvas.get(0, DEFAULT_HEIGHT), None);
         assert_eq!(canvas.get(100, 100), None);
     }
 
@@ -137,21 +140,21 @@ mod tests {
     fn test_out_of_bounds_set() {
         let mut canvas = Canvas::new();
         let cell = Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256::BLACK,
+            ch: blocks::FULL,
+            fg: RED,
+            bg: None,
         };
-        canvas.set(32, 0, cell); // Should not panic
-        canvas.set(0, 32, cell); // Should not panic
+        canvas.set(DEFAULT_WIDTH, 0, cell); // Should not panic
+        canvas.set(0, DEFAULT_HEIGHT, cell); // Should not panic
     }
 
     #[test]
     fn test_clear() {
         let mut canvas = Canvas::new();
         let cell = Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256(4),
+            ch: blocks::FULL,
+            fg: RED,
+            bg: BLUE,
         };
         canvas.set(0, 0, cell);
         canvas.set(31, 31, cell);
@@ -164,9 +167,9 @@ mod tests {
     fn test_resize_grow() {
         let mut canvas = Canvas::new_with_size(16, 16);
         let cell = Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256::BLACK,
+            ch: blocks::FULL,
+            fg: RED,
+            bg: None,
         };
         canvas.set(5, 5, cell);
         canvas.resize(32, 32);
@@ -180,9 +183,9 @@ mod tests {
     fn test_resize_shrink() {
         let mut canvas = Canvas::new_with_size(32, 32);
         let cell = Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256::BLACK,
+            ch: blocks::FULL,
+            fg: RED,
+            bg: None,
         };
         canvas.set(5, 5, cell);
         canvas.set(20, 20, cell);

@@ -2,7 +2,6 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, Mous
 
 use crate::app::{App, AppMode};
 use crate::canvas::Canvas;
-use crate::cell::Color256;
 use crate::history::History;
 use crate::palette::{PaletteItem, PaletteSection};
 use crate::tools::{ToolKind, ToolState};
@@ -14,12 +13,15 @@ pub struct CanvasArea {
     pub top: u16,
     pub width: u16,
     pub height: u16,
+    /// Viewport dimensions in canvas cells (set by renderer)
+    pub viewport_w: usize,
+    pub viewport_h: usize,
 }
 
 impl CanvasArea {
     /// Convert screen coordinates to canvas cell coordinates.
     /// Returns None if outside canvas bounds.
-    pub fn screen_to_canvas(&self, screen_x: u16, screen_y: u16) -> Option<(usize, usize)> {
+    pub fn screen_to_canvas(&self, screen_x: u16, screen_y: u16, zoom: u8, viewport_x: usize, viewport_y: usize) -> Option<(usize, usize)> {
         if screen_x < self.left || screen_y < self.top {
             return None;
         }
@@ -28,9 +30,11 @@ impl CanvasArea {
         if rel_x >= self.width || rel_y >= self.height {
             return None;
         }
-        // Each canvas cell is 2 chars wide
-        let canvas_x = (rel_x / 2) as usize;
-        let canvas_y = rel_y as usize;
+        let canvas_x = (rel_x / zoom as u16) as usize + viewport_x;
+        let canvas_y = match zoom {
+            4 => (rel_y / 2) as usize + viewport_y,
+            _ => rel_y as usize + viewport_y,
+        };
         Some((canvas_x, canvas_y))
     }
 }
@@ -131,6 +135,18 @@ pub fn handle_event(app: &mut App, event: Event, canvas_area: &CanvasArea) {
             }
             return;
         }
+        AppMode::HexColorInput => {
+            if let Event::Key(key) = event {
+                handle_hex_input(app, key);
+            }
+            return;
+        }
+        AppMode::BlockPicker => {
+            if let Event::Key(key) = event {
+                handle_block_picker(app, key);
+            }
+            return;
+        }
         _ => {}
     }
 
@@ -188,6 +204,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.export_format = 0;
                 app.export_dest = 0;
                 app.export_cursor = 0;
+                app.export_color_format = 0;
                 app.mode = AppMode::ExportDialog;
                 return;
             }
@@ -241,9 +258,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.set_status(&format!("Symmetry: {}", app.symmetry.label()));
         }
 
-        // Preview toggle
-        KeyCode::Tab => {
-            app.show_preview = !app.show_preview;
+        // Zoom cycle
+        KeyCode::Char('z') | KeyCode::Char('Z') => {
+            app.cycle_zoom();
         }
 
         // Quick color pick: 1-9 → curated palette slots 0-8, 0 → slot 9
@@ -259,8 +276,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Up => {
             if app.palette_cursor > 0 {
                 app.palette_cursor -= 1;
-                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
-                    app.color = Color256(*idx);
+                if let Some(PaletteItem::Color(color)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = *color;
                 }
                 app.ensure_palette_cursor_visible(15);
             }
@@ -268,8 +285,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Down => {
             if app.palette_cursor + 1 < app.palette_layout.len() {
                 app.palette_cursor += 1;
-                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
-                    app.color = Color256(*idx);
+                if let Some(PaletteItem::Color(color)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = *color;
                 }
                 app.ensure_palette_cursor_visible(15);
             }
@@ -277,8 +294,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Left => {
             if app.palette_cursor >= 6 {
                 app.palette_cursor -= 6;
-                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
-                    app.color = Color256(*idx);
+                if let Some(PaletteItem::Color(color)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = *color;
                 }
                 app.ensure_palette_cursor_visible(15);
             }
@@ -286,8 +303,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Right => {
             if app.palette_cursor + 6 < app.palette_layout.len() {
                 app.palette_cursor += 6;
-                if let Some(PaletteItem::Color(idx)) = app.palette_layout.get(app.palette_cursor) {
-                    app.color = Color256(*idx);
+                if let Some(PaletteItem::Color(color)) = app.palette_layout.get(app.palette_cursor) {
+                    app.color = *color;
                 }
                 app.ensure_palette_cursor_visible(15);
             }
@@ -314,22 +331,64 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                             app.palette_cursor = app.palette_layout.len().saturating_sub(1);
                         }
                     }
-                    PaletteItem::Color(idx) => {
-                        app.color = Color256(idx);
+                    PaletteItem::Color(color) => {
+                        app.color = color;
                     }
                 }
             }
         }
 
-        // HSL color sliders
+        // WASD canvas navigation
+        KeyCode::Char('w') | KeyCode::Char('W') => {
+            app.canvas_cursor.1 = app.canvas_cursor.1.saturating_sub(1);
+            app.canvas_cursor_active = true;
+            let (cx, cy) = app.canvas_cursor;
+            app.ensure_cursor_in_viewport(cx, cy, app.viewport_w, app.viewport_h);
+        }
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+            app.canvas_cursor.0 = (app.canvas_cursor.0 + 1).min(app.canvas.width.saturating_sub(1));
+            app.canvas_cursor_active = true;
+            let (cx, cy) = app.canvas_cursor;
+            app.ensure_cursor_in_viewport(cx, cy, app.viewport_w, app.viewport_h);
+        }
+        KeyCode::Char(' ') => {
+            if app.canvas_cursor_active {
+                let (x, y) = app.canvas_cursor;
+                if matches!(app.active_tool, ToolKind::Pencil | ToolKind::Eraser) {
+                    app.begin_stroke();
+                }
+                app.apply_tool(x, y);
+                if matches!(app.active_tool, ToolKind::Pencil | ToolKind::Eraser) {
+                    app.end_stroke();
+                }
+            }
+        }
+
+        // S key: canvas down if active, otherwise HSL sliders
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            let (r, g, b) = app.color.to_rgb();
-            let (h, s, l) = crate::palette::rgb_to_hsl(r, g, b);
-            app.slider_h = h;
-            app.slider_s = s;
-            app.slider_l = l;
-            app.slider_active = 0;
-            app.mode = AppMode::ColorSliders;
+            if app.canvas_cursor_active {
+                app.canvas_cursor.1 = (app.canvas_cursor.1 + 1).min(app.canvas.height.saturating_sub(1));
+                let (cx, cy) = app.canvas_cursor;
+                app.ensure_cursor_in_viewport(cx, cy, app.viewport_w, app.viewport_h);
+            } else {
+                let (h, s, l) = crate::palette::rgb_to_hsl(app.color.r, app.color.g, app.color.b);
+                app.slider_h = h;
+                app.slider_s = s;
+                app.slider_l = l;
+                app.slider_active = 0;
+                app.mode = AppMode::ColorSliders;
+            }
+        }
+
+        // A key: canvas left if active, otherwise add to palette
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            if app.canvas_cursor_active {
+                app.canvas_cursor.0 = app.canvas_cursor.0.saturating_sub(1);
+                let (cx, cy) = app.canvas_cursor;
+                app.ensure_cursor_in_viewport(cx, cy, app.viewport_w, app.viewport_h);
+            } else {
+                app.add_color_to_custom_palette();
+            }
         }
 
         // Custom palette dialog
@@ -337,14 +396,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.open_palette_dialog();
         }
 
-        // Add current color to active custom palette
-        KeyCode::Char('a') | KeyCode::Char('A') => {
-            app.add_color_to_custom_palette();
+        // Cycle block character type
+        KeyCode::Char('b') => {
+            app.cycle_block();
+        }
+        KeyCode::Char('B') => {
+            app.open_block_picker();
         }
 
-        // Cycle block character type
-        KeyCode::Char('b') | KeyCode::Char('B') => {
-            app.cycle_block();
+        // Shade cycle (G key)
+        KeyCode::Char('g') | KeyCode::Char('G') => {
+            app.cycle_shade();
         }
 
         // Toggle filled/outline rectangle
@@ -353,10 +415,21 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.set_status(if app.filled_rect { "Rect: Filled" } else { "Rect: Outline" });
         }
 
-        // Cancel multi-click tool
+        // Hex color input dialog
+        KeyCode::Char('x') | KeyCode::Char('X') => {
+            app.text_input = String::new();
+            app.mode = AppMode::HexColorInput;
+        }
+
+        // Cancel multi-click tool / deactivate canvas cursor
         KeyCode::Esc => {
-            app.cancel_tool();
-            app.set_status("Cancelled");
+            if app.canvas_cursor_active {
+                app.canvas_cursor_active = false;
+                app.set_status("Canvas cursor off");
+            } else {
+                app.cancel_tool();
+                app.set_status("Cancelled");
+            }
         }
 
         // Help
@@ -404,6 +477,9 @@ fn handle_file_dialog(app: &mut App, code: KeyCode) {
 }
 
 fn handle_export_dialog(app: &mut App, code: KeyCode) {
+    // Row count: 0=format, 1=dest; if ANSI: 0=format, 1=color_format, 2=dest
+    let max_row = if app.export_format == 1 { 2 } else { 1 };
+
     match code {
         KeyCode::Up => {
             if app.export_cursor > 0 {
@@ -411,14 +487,27 @@ fn handle_export_dialog(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Down => {
-            if app.export_cursor < 1 {
+            if app.export_cursor < max_row {
                 app.export_cursor += 1;
             }
         }
         KeyCode::Left | KeyCode::Right => {
             if app.export_cursor == 0 {
+                // Toggle format: PlainText <-> ANSI
                 app.export_format = 1 - app.export_format;
+                // Clamp cursor when switching from ANSI to plain text
+                if app.export_format == 0 && app.export_cursor > 1 {
+                    app.export_cursor = 1;
+                }
+            } else if app.export_format == 1 && app.export_cursor == 1 {
+                // Color format row (only when ANSI): cycle 0/1/2
+                if code == KeyCode::Right {
+                    app.export_color_format = (app.export_color_format + 1) % 3;
+                } else {
+                    app.export_color_format = (app.export_color_format + 2) % 3;
+                }
             } else {
+                // Dest row
                 app.export_dest = 1 - app.export_dest;
             }
         }
@@ -601,6 +690,10 @@ fn handle_new_canvas(app: &mut App, code: KeyCode) {
             app.project_name = None;
             app.project_path = None;
             app.cursor = None;
+            app.canvas_cursor = (0, 0);
+            app.canvas_cursor_active = false;
+            app.viewport_x = 0;
+            app.viewport_y = 0;
             app.tool_state = ToolState::Idle;
             app.mode = AppMode::Normal;
             app.set_status(&format!("New canvas {}x{}", w, h));
@@ -612,11 +705,100 @@ fn handle_new_canvas(app: &mut App, code: KeyCode) {
     }
 }
 
+fn handle_hex_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            match crate::cell::parse_hex_color(&app.text_input) {
+                Some(rgb) => {
+                    let matched = crate::palette::nearest_color(rgb.r, rgb.g, rgb.b);
+                    app.color = matched;
+                    app.mode = AppMode::Normal;
+                    app.set_status(&format!("Color: {} → {}", rgb.name(), matched.name()));
+                }
+                None => {
+                    app.set_status("Invalid hex (use #RRGGBB)");
+                }
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Backspace => {
+            app.text_input.pop();
+        }
+        KeyCode::Char(c) => {
+            if app.text_input.len() < 7 {
+                app.text_input.push(c);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_block_picker(app: &mut App, key: KeyEvent) {
+    use crate::cell::blocks;
+    let sizes = blocks::CATEGORY_SIZES;
+    let num_rows = sizes.len();
+
+    match key.code {
+        KeyCode::Left => {
+            if app.block_picker_col > 0 {
+                app.block_picker_col -= 1;
+            }
+        }
+        KeyCode::Right => {
+            let max_col = sizes[app.block_picker_row].saturating_sub(1);
+            if app.block_picker_col < max_col {
+                app.block_picker_col += 1;
+            }
+        }
+        KeyCode::Up => {
+            if app.block_picker_row > 0 {
+                app.block_picker_row -= 1;
+                // Clamp column to new row's width
+                let max_col = sizes[app.block_picker_row].saturating_sub(1);
+                if app.block_picker_col > max_col {
+                    app.block_picker_col = max_col;
+                }
+            }
+        }
+        KeyCode::Down => {
+            if app.block_picker_row < num_rows - 1 {
+                app.block_picker_row += 1;
+                // Clamp column to new row's width
+                let max_col = sizes[app.block_picker_row].saturating_sub(1);
+                if app.block_picker_col > max_col {
+                    app.block_picker_col = max_col;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            // Convert (row, col) to flat index into blocks::ALL
+            let offset: usize = sizes[..app.block_picker_row].iter().sum();
+            let idx = offset + app.block_picker_col;
+            if idx < blocks::ALL.len() {
+                app.active_block = blocks::ALL[idx];
+                app.set_status(&format!("Block: {}", app.active_block));
+            }
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
 fn handle_mouse(app: &mut App, mouse: MouseEvent, canvas_area: &CanvasArea) {
+    let zoom = app.zoom;
+    let vp_x = app.viewport_x;
+    let vp_y = app.viewport_y;
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row) {
+            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row, zoom, vp_x, vp_y) {
                 app.cursor = Some((x, y));
+                app.canvas_cursor = (x, y);
+                app.canvas_cursor_active = false;
                 // Start stroke for continuous tools
                 if matches!(app.active_tool, ToolKind::Pencil | ToolKind::Eraser) {
                     app.begin_stroke();
@@ -625,7 +807,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, canvas_area: &CanvasArea) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row) {
+            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row, zoom, vp_x, vp_y) {
                 app.cursor = Some((x, y));
                 if matches!(app.active_tool, ToolKind::Pencil | ToolKind::Eraser) {
                     app.apply_tool(x, y);
@@ -639,23 +821,72 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, canvas_area: &CanvasArea) {
         }
         MouseEventKind::Down(MouseButton::Right) => {
             // Quick eyedropper
-            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row) {
-                if let Some((picked, _bg, block)) = crate::tools::eyedropper(&app.canvas, x, y) {
-                    app.color = picked;
-                    if block != crate::cell::BlockChar::Empty {
-                        app.active_block = block;
+            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row, zoom, vp_x, vp_y) {
+                if let Some((picked_fg, _bg, ch)) = crate::tools::eyedropper(&app.canvas, x, y) {
+                    if let Some(picked) = picked_fg {
+                        app.color = picked;
+                        app.set_status(&format!("Picked: {} {}", picked.name(), ch));
                     }
-                    app.set_status(&format!("Picked: {} {}", picked.name(), block.to_char()));
+                    if ch != ' ' {
+                        app.active_block = ch;
+                    }
                 }
             }
         }
         MouseEventKind::Moved => {
-            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row) {
+            if let Some((x, y)) = canvas_area.screen_to_canvas(mouse.column, mouse.row, zoom, vp_x, vp_y) {
                 app.cursor = Some((x, y));
+                app.canvas_cursor_active = false;
             } else {
                 app.cursor = None;
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn area() -> CanvasArea {
+        CanvasArea { left: 10, top: 5, width: 64, height: 32, viewport_w: 64, viewport_h: 32 }
+    }
+
+    #[test]
+    fn test_screen_to_canvas_zoom_1() {
+        let a = area();
+        assert_eq!(a.screen_to_canvas(10, 5, 1, 0, 0), Some((0, 0)));
+        assert_eq!(a.screen_to_canvas(14, 8, 1, 0, 0), Some((4, 3)));
+    }
+
+    #[test]
+    fn test_screen_to_canvas_zoom_2() {
+        let a = area();
+        assert_eq!(a.screen_to_canvas(10, 5, 2, 0, 0), Some((0, 0)));
+        assert_eq!(a.screen_to_canvas(14, 8, 2, 0, 0), Some((2, 3)));
+    }
+
+    #[test]
+    fn test_screen_to_canvas_zoom_4() {
+        let a = area();
+        assert_eq!(a.screen_to_canvas(10, 5, 4, 0, 0), Some((0, 0)));
+        assert_eq!(a.screen_to_canvas(14, 9, 4, 0, 0), Some((1, 2)));
+    }
+
+    #[test]
+    fn test_screen_to_canvas_outside() {
+        let a = area();
+        assert_eq!(a.screen_to_canvas(5, 5, 1, 0, 0), None);
+        assert_eq!(a.screen_to_canvas(10, 3, 1, 0, 0), None);
+        assert_eq!(a.screen_to_canvas(80, 5, 1, 0, 0), None);
+    }
+
+    #[test]
+    fn test_screen_to_canvas_with_viewport_offset() {
+        let a = area();
+        // With viewport at (10, 5), the first screen cell maps to canvas (10, 5)
+        assert_eq!(a.screen_to_canvas(10, 5, 1, 10, 5), Some((10, 5)));
+        assert_eq!(a.screen_to_canvas(14, 8, 1, 10, 5), Some((14, 8)));
     }
 }

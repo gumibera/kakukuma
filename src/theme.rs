@@ -9,6 +9,8 @@ pub struct Theme {
     pub dim: Color,
     pub separator: Color,
     pub panel_bg: Color,
+    pub grid_even: Color,
+    pub grid_odd: Color,
 }
 
 pub const THEMES: [Theme; 3] = [WARM, NEON, DARK];
@@ -22,6 +24,8 @@ pub const WARM: Theme = Theme {
     dim: Color::Indexed(243),
     separator: Color::Indexed(239),
     panel_bg: Color::Indexed(235),
+    grid_even: Color::Indexed(235),
+    grid_odd: Color::Indexed(234),
 };
 
 pub const NEON: Theme = Theme {
@@ -33,6 +37,8 @@ pub const NEON: Theme = Theme {
     dim: Color::Indexed(245),
     separator: Color::Indexed(240),
     panel_bg: Color::Indexed(233),
+    grid_even: Color::Indexed(234),
+    grid_odd: Color::Indexed(233),
 };
 
 pub const DARK: Theme = Theme {
@@ -44,6 +50,8 @@ pub const DARK: Theme = Theme {
     dim: Color::Indexed(241),
     separator: Color::Indexed(237),
     panel_bg: Color::Indexed(234),
+    grid_even: Color::Indexed(236),
+    grid_odd: Color::Indexed(235),
 };
 
 #[cfg(test)]
@@ -71,5 +79,7 @@ mod tests {
         assert_eq!(WARM.dim, Color::Indexed(243));
         assert_eq!(WARM.separator, Color::Indexed(239));
         assert_eq!(WARM.panel_bg, Color::Indexed(235));
+        assert_eq!(WARM.grid_even, Color::Indexed(235));
+        assert_eq!(WARM.grid_odd, Color::Indexed(234));
     }
 }
