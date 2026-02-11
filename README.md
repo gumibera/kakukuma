@@ -73,7 +73,7 @@ cargo run -- myart.kaku
 |-----|--------|
 | `H` | Toggle horizontal symmetry |
 | `V` | Toggle vertical symmetry |
-| `Tab` | Toggle preview mode |
+| `Z` | Cycle zoom (1x / 2x / 4x) |
 | `Ctrl+T` | Cycle theme (Warm / Neon / Dark) |
 
 ### File Operations

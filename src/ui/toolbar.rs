@@ -14,7 +14,7 @@ pub fn tool_lines(app: &App) -> Vec<Line<'static>> {
         let prefix = if is_active { "\u{25B8}" } else { " " }; // ▸ or space
         let style = if is_active {
             Style::default()
-                .fg(Color::Black)
+                .fg(Color::Indexed(16))
                 .bg(theme.highlight)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -56,7 +56,7 @@ pub fn block_lines(app: &App) -> Vec<Line<'static>> {
     let block_line = Line::from(vec![
         Span::styled(" ", Style::default()),
         Span::styled(
-            format!("{}", app.active_block.to_char()),
+            format!("{}", app.active_block),
             Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -69,4 +69,25 @@ pub fn block_lines(app: &App) -> Vec<Line<'static>> {
     let rect_line = Line::from(Span::styled(rect_text, Style::default().fg(theme.dim)));
 
     vec![block_line, rect_line]
+}
+
+/// Active color swatch display.
+pub fn color_swatch_lines(app: &App) -> Vec<Line<'static>> {
+    let theme = app.theme();
+    let label = Line::from(Span::styled(
+        " Color:",
+        Style::default().fg(theme.accent),
+    ));
+    let swatch = Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            "    ",
+            Style::default().bg(app.color.to_ratatui()),
+        ),
+        Span::styled(
+            format!(" {}", app.color.name()),
+            Style::default().fg(theme.dim),
+        ),
+    ]);
+    vec![label, swatch]
 }

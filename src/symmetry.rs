@@ -95,7 +95,7 @@ pub fn apply_symmetry(mutations: Vec<CellMutation>, mode: SymmetryMode, width: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::{BlockChar, Cell, Color256};
+    use crate::cell::{blocks, Cell, Rgb};
 
     fn make_mutation(x: usize, y: usize) -> CellMutation {
         CellMutation {
@@ -103,9 +103,9 @@ mod tests {
             y,
             old: Cell::default(),
             new: Cell {
-                block: BlockChar::Full,
-                fg: Color256(1),
-                bg: Color256::BLACK,
+                ch: blocks::FULL,
+                fg: Some(Rgb { r: 205, g: 0, b: 0 }),
+                bg: None,
             },
         }
     }
@@ -154,5 +154,46 @@ mod tests {
         let result = apply_symmetry(mutations, SymmetryMode::Horizontal, 32, 32);
         assert_eq!(result.len(), 2);
         assert_eq!(result[1].x, 16); // 31 - 15
+    }
+
+    // --- Cycle 15 QA: Shade character symmetry tests ---
+
+    fn make_shade_mutation(x: usize, y: usize) -> CellMutation {
+        CellMutation {
+            x,
+            y,
+            old: Cell::default(),
+            new: Cell {
+                ch: blocks::SHADE_MEDIUM,
+                fg: Some(Rgb { r: 205, g: 0, b: 0 }),
+                bg: None,
+            },
+        }
+    }
+
+    #[test]
+    fn test_symmetry_shade_horizontal() {
+        let mutations = vec![make_shade_mutation(5, 10)];
+        let result = apply_symmetry(mutations, SymmetryMode::Horizontal, 32, 32);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].new.ch, blocks::SHADE_MEDIUM);
+        assert_eq!(result[1].new.ch, blocks::SHADE_MEDIUM);
+        assert_eq!(result[0].x, 5);
+        assert_eq!(result[1].x, 26); // 31 - 5
+    }
+
+    #[test]
+    fn test_symmetry_shade_quad() {
+        let mutations = vec![make_shade_mutation(3, 7)];
+        let result = apply_symmetry(mutations, SymmetryMode::Quad, 32, 32);
+        assert_eq!(result.len(), 4);
+        for m in &result {
+            assert_eq!(m.new.ch, blocks::SHADE_MEDIUM);
+            assert_eq!(m.new.fg, Some(Rgb { r: 205, g: 0, b: 0 }));
+        }
+        assert_eq!((result[0].x, result[0].y), (3, 7));
+        assert_eq!((result[1].x, result[1].y), (28, 7));
+        assert_eq!((result[2].x, result[2].y), (3, 24));
+        assert_eq!((result[3].x, result[3].y), (28, 24));
     }
 }

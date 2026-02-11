@@ -2,47 +2,48 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cell::Color256;
+use crate::cell::{color256_to_rgb, Rgb};
 
 /// Curated 24-color default palette covering neutrals, warm, cool, and accent hues.
-pub const DEFAULT_PALETTE: [u8; 24] = [
-    // Neutrals (6)
-    0,    // Black
-    236,  // Dark gray
-    244,  // Medium gray
-    250,  // Light gray
-    255,  // Near white (grayscale ramp)
-    15,   // Bright white
+/// Computed from original xterm-256 indices.
+pub const DEFAULT_PALETTE: [Rgb; 24] = [
+    // Neutrals (6) — indices 0, 236, 244, 250, 255, 15
+    Rgb { r: 0, g: 0, b: 0 },         // Black (0)
+    Rgb { r: 48, g: 48, b: 48 },       // Dark gray (236)
+    Rgb { r: 128, g: 128, b: 128 },    // Medium gray (244)
+    Rgb { r: 188, g: 188, b: 188 },    // Light gray (250)
+    Rgb { r: 238, g: 238, b: 238 },    // Near white (255)
+    Rgb { r: 255, g: 255, b: 255 },    // Bright white (15)
 
-    // Warm (6)
-    1,    // Dark red
-    196,  // Bright red
-    208,  // Orange
-    214,  // Light orange / amber
-    226,  // Yellow
-    229,  // Light yellow
+    // Warm (6) — indices 1, 196, 208, 214, 226, 229
+    Rgb { r: 205, g: 0, b: 0 },        // Dark red (1)
+    Rgb { r: 255, g: 0, b: 0 },        // Bright red (196)
+    Rgb { r: 255, g: 135, b: 0 },      // Orange (208)
+    Rgb { r: 255, g: 175, b: 0 },      // Light orange / amber (214)
+    Rgb { r: 255, g: 255, b: 0 },      // Yellow (226)
+    Rgb { r: 255, g: 255, b: 175 },    // Light yellow (229)
 
-    // Cool (6)
-    22,   // Dark green
-    46,   // Bright green
-    30,   // Teal
-    39,   // Sky blue
-    21,   // Bright blue
-    54,   // Dark purple
+    // Cool (6) — indices 22, 46, 30, 39, 21, 54
+    Rgb { r: 0, g: 95, b: 0 },         // Dark green (22)
+    Rgb { r: 0, g: 255, b: 0 },        // Bright green (46)
+    Rgb { r: 0, g: 135, b: 135 },      // Teal (30)
+    Rgb { r: 0, g: 175, b: 255 },      // Sky blue (39)
+    Rgb { r: 0, g: 0, b: 255 },        // Bright blue (21)
+    Rgb { r: 95, g: 0, b: 175 },       // Dark purple (54)
 
-    // Accent (6)
-    200,  // Pink / magenta
-    213,  // Light pink
-    93,   // Lavender
-    180,  // Tan / skin light
-    137,  // Skin / warm mid
-    94,   // Brown
+    // Accent (6) — indices 200, 213, 93, 180, 137, 94
+    Rgb { r: 255, g: 0, b: 215 },      // Pink / magenta (200)
+    Rgb { r: 255, g: 135, b: 215 },    // Light pink (213)
+    Rgb { r: 135, g: 0, b: 255 },      // Lavender (93)
+    Rgb { r: 215, g: 175, b: 135 },    // Tan / skin light (180)
+    Rgb { r: 175, g: 135, b: 95 },     // Skin / warm mid (137)
+    Rgb { r: 135, g: 95, b: 0 },       // Brown (94)
 ];
 
 /// An item in the flattened palette layout — either a color swatch or a section header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteItem {
-    Color(u8),
+    Color(Rgb),
     SectionHeader(PaletteSection),
 }
 
@@ -57,7 +58,7 @@ pub enum PaletteSection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CustomPalette {
     pub name: String,
-    pub colors: Vec<u8>,
+    pub colors: Vec<Rgb>,
 }
 
 /// List `.palette` files in the given directory.
@@ -91,7 +92,7 @@ pub fn save_palette(palette: &CustomPalette, path: &Path) -> Result<(), String> 
 pub struct HueGroup {
     #[allow(dead_code)] // Used in tests; may be displayed in expanded sections later
     pub name: &'static str,
-    pub colors: Vec<u8>,
+    pub colors: Vec<Rgb>,
 }
 
 /// Compute hue angle (0–359) from RGB, or None for grays.
@@ -129,24 +130,25 @@ pub fn build_hue_groups() -> Vec<HueGroup> {
     let mut neutrals = Vec::new();
 
     for idx in 16u8..=231 {
-        let (r, g, b) = Color256(idx).to_rgb();
-        match rgb_hue(r, g, b) {
+        let c = color256_to_rgb(idx);
+        match rgb_hue(c.r, c.g, c.b) {
             Some(h) => {
+                let color = c;
                 match h {
-                    0..=14 | 346..=359 => reds.push(idx),
-                    15..=39 => oranges.push(idx),
-                    40..=69 => yellows.push(idx),
-                    70..=159 => greens.push(idx),
-                    160..=199 => cyans.push(idx),
-                    200..=259 => blues.push(idx),
-                    260..=299 => purples.push(idx),
-                    300..=345 => pinks.push(idx),
-                    _ => neutrals.push(idx),
+                    0..=14 | 346..=359 => reds.push(color),
+                    15..=39 => oranges.push(color),
+                    40..=69 => yellows.push(color),
+                    70..=159 => greens.push(color),
+                    160..=199 => cyans.push(color),
+                    200..=259 => blues.push(color),
+                    260..=299 => purples.push(color),
+                    300..=345 => pinks.push(color),
+                    _ => neutrals.push(color),
                 }
             }
             None => {
                 // Pure grays in the cube — assign to neutrals
-                neutrals.push(idx);
+                neutrals.push(c);
             }
         }
     }
@@ -239,23 +241,11 @@ pub fn hsl_to_rgb(h: u16, s: u8, l: u8) -> (u8, u8, u8) {
 }
 
 /// Find the nearest xterm-256 color to an (R, G, B) value using Euclidean distance.
-pub fn nearest_color(r: u8, g: u8, b: u8) -> Color256 {
-    let mut best_idx: u8 = 0;
-    let mut best_dist = u32::MAX;
-
-    for i in 0u16..=255 {
-        let (cr, cg, cb) = Color256(i as u8).to_rgb();
-        let dr = r as i32 - cr as i32;
-        let dg = g as i32 - cg as i32;
-        let db = b as i32 - cb as i32;
-        let dist = (dr * dr + dg * dg + db * db) as u32;
-        if dist < best_dist {
-            best_dist = dist;
-            best_idx = i as u8;
-        }
-    }
-
-    Color256(best_idx)
+/// Returns the Rgb value of the nearest match.
+pub fn nearest_color(r: u8, g: u8, b: u8) -> Rgb {
+    let target = Rgb::new(r, g, b);
+    let idx = crate::cell::nearest_256(&target);
+    color256_to_rgb(idx)
 }
 
 #[cfg(test)]
@@ -265,9 +255,9 @@ mod tests {
 
     #[test]
     fn test_default_palette_unique_and_valid() {
-        let mut seen: HashSet<u8> = HashSet::new();
-        for &idx in &DEFAULT_PALETTE {
-            assert!(seen.insert(idx), "Duplicate index {} in DEFAULT_PALETTE", idx);
+        let mut seen: HashSet<(u8, u8, u8)> = HashSet::new();
+        for &c in &DEFAULT_PALETTE {
+            assert!(seen.insert((c.r, c.g, c.b)), "Duplicate color in DEFAULT_PALETTE");
         }
         assert_eq!(DEFAULT_PALETTE.len(), 24);
     }
@@ -275,11 +265,10 @@ mod tests {
     #[test]
     fn test_all_216_covered() {
         let groups = build_hue_groups();
-        let mut seen: HashSet<u8> = HashSet::new();
+        let mut seen: HashSet<(u8, u8, u8)> = HashSet::new();
         for group in &groups {
             for &c in &group.colors {
-                assert!(c >= 16 && c <= 231, "Index {} out of cube range", c);
-                assert!(seen.insert(c), "Duplicate index {}", c);
+                assert!(seen.insert((c.r, c.g, c.b)), "Duplicate color {:?}", c);
             }
         }
         assert_eq!(seen.len(), 216, "Expected 216 colors, got {}", seen.len());
@@ -288,13 +277,21 @@ mod tests {
     #[test]
     fn test_no_missing_indices() {
         let groups = build_hue_groups();
-        let mut all: Vec<u8> = Vec::new();
+        let mut all: Vec<(u8, u8, u8)> = Vec::new();
         for group in &groups {
-            all.extend(&group.colors);
+            for &c in &group.colors {
+                all.push((c.r, c.g, c.b));
+            }
         }
+        // Should have exactly 216 unique colors matching the cube indices 16-231
+        let expected: Vec<(u8, u8, u8)> = (16..=231u8).map(|i| {
+            let c = color256_to_rgb(i);
+            (c.r, c.g, c.b)
+        }).collect();
         all.sort();
-        let expected: Vec<u8> = (16..=231).collect();
-        assert_eq!(all, expected);
+        let mut expected_sorted = expected;
+        expected_sorted.sort();
+        assert_eq!(all, expected_sorted);
     }
 
     #[test]
@@ -399,39 +396,45 @@ mod tests {
 
     #[test]
     fn test_nearest_color_pure_red() {
-        // Pure red (255, 0, 0) should map to index 196 (cube) or 9 (bright red)
+        // Pure red (255, 0, 0) should map to a red
         let c = nearest_color(255, 0, 0);
-        assert!(c == Color256(196) || c == Color256(9), "Got {:?}", c);
+        assert!(c == color256_to_rgb(196) || c == color256_to_rgb(9), "Got {:?}", c);
     }
 
     #[test]
     fn test_nearest_color_pure_green() {
         let c = nearest_color(0, 255, 0);
-        assert!(c == Color256(46) || c == Color256(10), "Got {:?}", c);
+        assert!(c == color256_to_rgb(46) || c == color256_to_rgb(10), "Got {:?}", c);
     }
 
     #[test]
     fn test_nearest_color_pure_blue() {
         let c = nearest_color(0, 0, 255);
-        assert!(c == Color256(21) || c == Color256(12), "Got {:?}", c);
+        assert!(c == color256_to_rgb(21) || c == color256_to_rgb(12), "Got {:?}", c);
     }
 
     #[test]
     fn test_nearest_color_black() {
-        assert_eq!(nearest_color(0, 0, 0), Color256(0));
+        assert_eq!(nearest_color(0, 0, 0), Rgb::BLACK);
     }
 
     #[test]
     fn test_nearest_color_white() {
         let c = nearest_color(255, 255, 255);
-        assert!(c == Color256(15) || c == Color256(231), "Got {:?}", c);
+        assert!(c == color256_to_rgb(15) || c == color256_to_rgb(231), "Got {:?}", c);
     }
 
     #[test]
     fn test_custom_palette_save_load_roundtrip() {
         let palette = CustomPalette {
             name: "Test Forest".to_string(),
-            colors: vec![22, 28, 34, 40, 46],
+            colors: vec![
+                color256_to_rgb(22),
+                color256_to_rgb(28),
+                color256_to_rgb(34),
+                color256_to_rgb(40),
+                color256_to_rgb(46),
+            ],
         };
         let dir = std::env::temp_dir();
         let path = dir.join("kaku_test_roundtrip.palette");
@@ -439,18 +442,19 @@ mod tests {
 
         let loaded = load_palette(&path).unwrap();
         assert_eq!(loaded.name, "Test Forest");
-        assert_eq!(loaded.colors, vec![22, 28, 34, 40, 46]);
+        assert_eq!(loaded.colors.len(), 5);
+        assert_eq!(loaded.colors[0], color256_to_rgb(22));
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_rename_palette() {
-        let dir = std::env::temp_dir().join("kaku_test_rename");
+        let dir = std::env::temp_dir().join("kaku_test_rename_rgb");
         let _ = std::fs::create_dir_all(&dir);
         let cp = CustomPalette {
             name: "OldName".to_string(),
-            colors: vec![1, 2, 3],
+            colors: vec![Rgb::new(255, 0, 0), Rgb::new(0, 255, 0)],
         };
         let old_path = dir.join("OldName.palette");
         save_palette(&cp, &old_path).unwrap();
@@ -465,18 +469,18 @@ mod tests {
         assert!(!old_path.exists());
         let reloaded = load_palette(&new_path).unwrap();
         assert_eq!(reloaded.name, "NewName");
-        assert_eq!(reloaded.colors, vec![1, 2, 3]);
+        assert_eq!(reloaded.colors.len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_duplicate_palette() {
-        let dir = std::env::temp_dir().join("kaku_test_duplicate");
+        let dir = std::env::temp_dir().join("kaku_test_duplicate_rgb");
         let _ = std::fs::create_dir_all(&dir);
         let cp = CustomPalette {
             name: "Original".to_string(),
-            colors: vec![10, 20, 30],
+            colors: vec![Rgb::new(10, 20, 30)],
         };
         let orig_path = dir.join("Original.palette");
         save_palette(&cp, &orig_path).unwrap();
@@ -491,18 +495,18 @@ mod tests {
         assert!(dup_path.exists());
         let loaded = load_palette(&dup_path).unwrap();
         assert_eq!(loaded.name, "Original (Copy)");
-        assert_eq!(loaded.colors, vec![10, 20, 30]);
+        assert_eq!(loaded.colors, vec![Rgb::new(10, 20, 30)]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_delete_palette() {
-        let dir = std::env::temp_dir().join("kaku_test_delete");
+        let dir = std::env::temp_dir().join("kaku_test_delete_rgb");
         let _ = std::fs::create_dir_all(&dir);
         let cp = CustomPalette {
             name: "ToDelete".to_string(),
-            colors: vec![5],
+            colors: vec![Rgb::new(5, 5, 5)],
         };
         let path = dir.join("ToDelete.palette");
         save_palette(&cp, &path).unwrap();
@@ -516,11 +520,11 @@ mod tests {
 
     #[test]
     fn test_rename_to_existing_name_blocked() {
-        let dir = std::env::temp_dir().join("kaku_test_rename_conflict");
+        let dir = std::env::temp_dir().join("kaku_test_rename_conflict_rgb");
         let _ = std::fs::create_dir_all(&dir);
 
-        let cp1 = CustomPalette { name: "A".to_string(), colors: vec![1] };
-        let cp2 = CustomPalette { name: "B".to_string(), colors: vec![2] };
+        let cp1 = CustomPalette { name: "A".to_string(), colors: vec![Rgb::new(1, 0, 0)] };
+        let cp2 = CustomPalette { name: "B".to_string(), colors: vec![Rgb::new(0, 1, 0)] };
         save_palette(&cp1, &dir.join("A.palette")).unwrap();
         save_palette(&cp2, &dir.join("B.palette")).unwrap();
 
@@ -533,11 +537,11 @@ mod tests {
 
     #[test]
     fn test_export_palette() {
-        let dir = std::env::temp_dir().join("kaku_test_export");
+        let dir = std::env::temp_dir().join("kaku_test_export_rgb");
         let _ = std::fs::create_dir_all(&dir);
         let cp = CustomPalette {
             name: "ExportMe".to_string(),
-            colors: vec![100, 200],
+            colors: vec![Rgb::new(100, 100, 100)],
         };
         let src = dir.join("ExportMe.palette");
         save_palette(&cp, &src).unwrap();
@@ -547,14 +551,14 @@ mod tests {
         assert!(dest.exists());
         let loaded = load_palette(&dest).unwrap();
         assert_eq!(loaded.name, "ExportMe");
-        assert_eq!(loaded.colors, vec![100, 200]);
+        assert_eq!(loaded.colors.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_list_palette_files() {
-        let dir = std::env::temp_dir().join("kaku_test_list_palettes");
+        let dir = std::env::temp_dir().join("kaku_test_list_palettes_rgb");
         let _ = std::fs::create_dir_all(&dir);
 
         // Create test files

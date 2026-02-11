@@ -2,121 +2,134 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, Borders, BorderType, Widget};
 
 use crate::app::App;
-use crate::cell::{BlockChar, Cell, Color256};
+use crate::cell::{blocks, is_half_block, Cell, resolve_half_block};
 use crate::input::CanvasArea;
+use crate::theme::Theme;
 use crate::tools::{self, ToolState};
 
 /// Return the visual background color for an empty/transparent cell position.
-fn grid_bg(x: usize, y: usize, show_grid: bool) -> Color {
+fn grid_bg(x: usize, y: usize, show_grid: bool, theme: &Theme) -> Color {
     if show_grid {
         if (x + y).is_multiple_of(2) {
-            Color::Indexed(235)
+            theme.grid_even
         } else {
-            Color::Indexed(234)
+            theme.grid_odd
         }
     } else {
         Color::Reset
     }
 }
 
-/// Resolve a half-block cell into (char, fg, bg) for terminal rendering,
-/// treating Color256::BLACK halves as transparent (grid/background).
-fn resolve_half_block(cell: Cell, x: usize, y: usize, show_grid: bool) -> (char, Color, Color) {
-    let canvas_bg = Color256::BLACK;
+/// Thin wrapper around `cell::resolve_half_block` that maps transparent halves
+/// to grid background colors for terminal display.
+fn resolve_half_block_for_display(cell: Cell, x: usize, y: usize, show_grid: bool, theme: &Theme) -> (char, Color, Color) {
+    let resolved = resolve_half_block(&cell).unwrap();
 
-    match cell.block {
-        BlockChar::UpperHalf => {
-            let top = cell.fg;
-            let bottom = cell.bg;
-            match (top == canvas_bg, bottom == canvas_bg) {
-                (true, true) => (' ', Color::Reset, grid_bg(x, y, show_grid)),
-                (false, true) => ('▀', top.to_ratatui(), grid_bg(x, y, show_grid)),
-                (true, false) => ('▄', bottom.to_ratatui(), grid_bg(x, y, show_grid)),
-                (false, false) => ('▀', top.to_ratatui(), bottom.to_ratatui()),
-            }
-        }
-        BlockChar::LeftHalf => {
-            let left = cell.fg;
-            let right = cell.bg;
-            match (left == canvas_bg, right == canvas_bg) {
-                (true, true) => (' ', Color::Reset, grid_bg(x, y, show_grid)),
-                (false, true) => ('▌', left.to_ratatui(), grid_bg(x, y, show_grid)),
-                (true, false) => ('▐', right.to_ratatui(), grid_bg(x, y, show_grid)),
-                (false, false) => ('▌', left.to_ratatui(), right.to_ratatui()),
-            }
-        }
-        // LowerHalf and RightHalf are non-canonical but handle defensively
-        BlockChar::LowerHalf => {
-            let bottom = cell.fg;
-            let top = cell.bg;
-            match (top == canvas_bg, bottom == canvas_bg) {
-                (true, true) => (' ', Color::Reset, grid_bg(x, y, show_grid)),
-                (false, true) => ('▀', top.to_ratatui(), grid_bg(x, y, show_grid)),
-                (true, false) => ('▄', bottom.to_ratatui(), grid_bg(x, y, show_grid)),
-                (false, false) => ('▄', bottom.to_ratatui(), top.to_ratatui()),
-            }
-        }
-        BlockChar::RightHalf => {
-            let right = cell.fg;
-            let left = cell.bg;
-            match (left == canvas_bg, right == canvas_bg) {
-                (true, true) => (' ', Color::Reset, grid_bg(x, y, show_grid)),
-                (false, true) => ('▌', left.to_ratatui(), grid_bg(x, y, show_grid)),
-                (true, false) => ('▐', right.to_ratatui(), grid_bg(x, y, show_grid)),
-                (false, false) => ('▐', right.to_ratatui(), left.to_ratatui()),
-            }
-        }
-        _ => unreachable!("resolve_half_block called for non-half-block"),
+    if resolved.ch == ' ' {
+        return (' ', Color::Reset, grid_bg(x, y, show_grid, theme));
     }
+
+    let fg = resolved.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
+    let bg = resolved.bg.map_or(grid_bg(x, y, show_grid, theme), |rgb| rgb.to_ratatui());
+    (resolved.ch, fg, bg)
 }
 
 /// Render the canvas editor and return the screen area for mouse mapping.
 pub fn render(f: &mut Frame, app: &App, area: Rect) -> CanvasArea {
-    let canvas_w = (app.canvas.width * 2) as u16;
-    let canvas_h = app.canvas.height as u16;
+    let theme = app.theme();
+    let zoom = app.zoom as u16;
 
-    // Center the canvas in the available area
-    let offset_x = (area.width.saturating_sub(canvas_w)) / 2;
-    let offset_y = (area.height.saturating_sub(canvas_h)) / 2;
+    // Viewport: how many canvas cells fit in the available area
+    let inner_w = area.width.saturating_sub(2); // border
+    let inner_h = area.height.saturating_sub(2);
+    let vp_w = (inner_w / zoom) as usize;
+    let vp_h = match zoom {
+        4 => (inner_h / 2) as usize,
+        _ => inner_h as usize,
+    };
 
-    let canvas_rect = Rect::new(
+    // Visible canvas dimensions (clamped to actual canvas size)
+    let vis_w = vp_w.min(app.canvas.width.saturating_sub(app.viewport_x));
+    let vis_h = vp_h.min(app.canvas.height.saturating_sub(app.viewport_y));
+
+    let canvas_w = vis_w as u16 * zoom;
+    let canvas_h = match zoom {
+        4 => vis_h as u16 * 2,
+        _ => vis_h as u16,
+    };
+
+    // Add 2 for border on each axis
+    let bordered_w = canvas_w + 2;
+    let bordered_h = canvas_h + 2;
+
+    // Center the bordered area
+    let offset_x = (area.width.saturating_sub(bordered_w)) / 2;
+    let offset_y = (area.height.saturating_sub(bordered_h)) / 2;
+
+    let bordered_rect = Rect::new(
         area.x + offset_x,
         area.y + offset_y,
-        canvas_w.min(area.width),
-        canvas_h.min(area.height),
+        bordered_w.min(area.width),
+        bordered_h.min(area.height),
     );
 
+    // Render the border
+    let border = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.separator));
+    let inner_rect = border.inner(bordered_rect);
+    f.render_widget(border, bordered_rect);
+
+    // Scroll indicators on border edges
+    let buf = f.buffer_mut();
+    let ind_style = Style::default().fg(theme.dim);
+    if app.viewport_x > 0 {
+        // Left arrow on left border
+        let mid_y = bordered_rect.y + bordered_rect.height / 2;
+        if mid_y < bordered_rect.y + bordered_rect.height {
+            buf.set_string(bordered_rect.x, mid_y, "\u{25C0}", ind_style);
+        }
+    }
+    if app.viewport_x + vis_w < app.canvas.width {
+        // Right arrow on right border
+        let mid_y = bordered_rect.y + bordered_rect.height / 2;
+        let right_x = bordered_rect.x + bordered_rect.width.saturating_sub(1);
+        if mid_y < bordered_rect.y + bordered_rect.height {
+            buf.set_string(right_x, mid_y, "\u{25B6}", ind_style);
+        }
+    }
+    if app.viewport_y > 0 {
+        // Up arrow on top border
+        let mid_x = bordered_rect.x + bordered_rect.width / 2;
+        if mid_x < bordered_rect.x + bordered_rect.width {
+            buf.set_string(mid_x, bordered_rect.y, "\u{25B2}", ind_style);
+        }
+    }
+    if app.viewport_y + vis_h < app.canvas.height {
+        // Down arrow on bottom border
+        let mid_x = bordered_rect.x + bordered_rect.width / 2;
+        let bot_y = bordered_rect.y + bordered_rect.height.saturating_sub(1);
+        if mid_x < bordered_rect.x + bordered_rect.width {
+            buf.set_string(mid_x, bot_y, "\u{25BC}", ind_style);
+        }
+    }
+
+    // Render canvas inside the border
     let widget = CanvasWidget { app };
-    f.render_widget(widget, canvas_rect);
+    f.render_widget(widget, inner_rect);
 
     CanvasArea {
-        left: canvas_rect.x,
-        top: canvas_rect.y,
-        width: canvas_rect.width,
-        height: canvas_rect.height,
+        left: inner_rect.x,
+        top: inner_rect.y,
+        width: inner_rect.width,
+        height: inner_rect.height,
+        viewport_w: vp_w,
+        viewport_h: vp_h,
     }
-}
-
-/// Render the canvas as a true terminal preview (1 char per cell, actual output size).
-pub fn render_preview(f: &mut Frame, app: &App, area: Rect) {
-    let canvas_w = app.canvas.width as u16;
-    let canvas_h = app.canvas.height as u16;
-
-    let offset_x = (area.width.saturating_sub(canvas_w)) / 2;
-    let offset_y = (area.height.saturating_sub(canvas_h)) / 2;
-
-    let canvas_rect = Rect::new(
-        area.x + offset_x,
-        area.y + offset_y,
-        canvas_w.min(area.width),
-        canvas_h.min(area.height),
-    );
-
-    let widget = TruePreviewWidget { app };
-    f.render_widget(widget, canvas_rect);
 }
 
 struct CanvasWidget<'a> {
@@ -125,7 +138,7 @@ struct CanvasWidget<'a> {
 
 impl<'a> CanvasWidget<'a> {
     fn is_in_tool_preview(&self, x: usize, y: usize) -> bool {
-        let cursor = match self.app.cursor {
+        let cursor = match self.app.effective_cursor() {
             Some(c) => c,
             None => return false,
         };
@@ -149,129 +162,108 @@ impl<'a> CanvasWidget<'a> {
 
 impl<'a> Widget for CanvasWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let cw = self.app.canvas.width;
-        let ch = self.app.canvas.height;
-        for y in 0..ch {
-            for x in 0..cw {
-                let screen_x = area.x + (x as u16) * 2;
-                let screen_y = area.y + y as u16;
+        let zoom = self.app.zoom;
+        let show_grid = zoom > 1;
+        let theme = self.app.theme();
+        let vp_x = self.app.viewport_x;
+        let vp_y = self.app.viewport_y;
 
-                if screen_x + 1 >= area.x + area.width || screen_y >= area.y + area.height {
-                    continue;
-                }
+        // Viewport dimensions in canvas cells
+        let vp_w = (area.width / zoom as u16) as usize;
+        let vp_h = match zoom {
+            4 => (area.height / 2) as usize,
+            _ => area.height as usize,
+        };
 
-                if let Some(cell) = self.app.canvas.get(x, y) {
-                    let is_cursor = self.app.cursor == Some((x, y));
+        let vis_w = vp_w.min(self.app.canvas.width.saturating_sub(vp_x));
+        let vis_h = vp_h.min(self.app.canvas.height.saturating_sub(vp_y));
 
-                    // Tool preview overlay (line/rect in progress)
-                    let render_cell = if self.is_in_tool_preview(x, y) && !is_cursor {
-                        tools::compose_cell(
-                            cell,
-                            self.app.active_block,
-                            self.app.color,
-                            Color256::BLACK,
-                        )
-                    } else {
-                        cell
-                    };
+        for vy in 0..vis_h {
+            for vx in 0..vis_w {
+                let x = vx + vp_x;
+                let y = vy + vp_y;
+                let screen_x = area.x + (vx as u16) * zoom as u16;
+                let screen_y = match zoom {
+                    4 => area.y + (vy as u16) * 2,
+                    _ => area.y + vy as u16,
+                };
 
-                    // Symmetry axis check
-                    let on_h_axis = self.app.symmetry.has_horizontal()
-                        && (x == cw / 2 - 1 || x == cw / 2);
-                    let on_v_axis = self.app.symmetry.has_vertical()
-                        && (y == ch / 2 - 1 || y == ch / 2);
-                    let on_axis = (on_h_axis || on_v_axis) && !is_cursor;
-
-                    // Horizontal half-blocks (▌▐): render each terminal char
-                    // separately so the left/right split is clearly visible.
-                    let is_horiz_half = matches!(
-                        render_cell.block,
-                        BlockChar::LeftHalf | BlockChar::RightHalf
-                    );
-
-                    if is_horiz_half && !is_cursor {
-                        let (left, right) = match render_cell.block {
-                            BlockChar::LeftHalf => (render_cell.fg, render_cell.bg),
-                            _ => (render_cell.bg, render_cell.fg),
-                        };
-                        let canvas_bg = Color256::BLACK;
-                        let left_bg = if left == canvas_bg {
-                            grid_bg(x, y, true)
-                        } else {
-                            left.to_ratatui()
-                        };
-                        let right_bg = if right == canvas_bg {
-                            grid_bg(x, y, true)
-                        } else {
-                            right.to_ratatui()
-                        };
-                        buf.set_string(screen_x, screen_y, " ", Style::default().bg(left_bg));
-                        buf.set_string(screen_x + 1, screen_y, " ", Style::default().bg(right_bg));
-                    } else {
-                        let (ch, mut fg, mut bg) = match render_cell.block {
-                            BlockChar::Full => {
-                                let c = render_cell.fg.to_ratatui();
-                                (render_cell.block.to_char(), c, c)
-                            }
-                            BlockChar::Empty => {
-                                (' ', render_cell.fg.to_ratatui(), grid_bg(x, y, true))
-                            }
-                            _ => {
-                                // Vertical half-blocks, or horizontal under cursor
-                                resolve_half_block(render_cell, x, y, true)
-                            }
-                        };
-
-                        if on_axis && render_cell.block == BlockChar::Empty {
-                            bg = Color::Indexed(238);
-                        }
-
-                        if is_cursor {
-                            std::mem::swap(&mut fg, &mut bg);
-                        }
-
-                        let style = Style::default().fg(fg).bg(bg);
-                        let ch_str: String = std::iter::repeat_n(ch, 2).collect();
-                        buf.set_string(screen_x, screen_y, &ch_str, style);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// True terminal preview: 1 character per cell (actual output size).
-struct TruePreviewWidget<'a> {
-    app: &'a App,
-}
-
-impl<'a> Widget for TruePreviewWidget<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        for y in 0..self.app.canvas.height {
-            for x in 0..self.app.canvas.width {
-                let screen_x = area.x + x as u16;
-                let screen_y = area.y + y as u16;
-
+                // Bounds check
                 if screen_x >= area.x + area.width || screen_y >= area.y + area.height {
                     continue;
                 }
 
-                if let Some(cell) = self.app.canvas.get(x, y) {
-                    let (ch, fg, bg) = match cell.block {
-                        BlockChar::Full => {
-                            let c = cell.fg.to_ratatui();
-                            (cell.block.to_char(), c, c)
+                let cell = match self.app.canvas.get(x, y) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                let is_cursor = self.app.effective_cursor() == Some((x, y));
+
+                // Tool preview overlay (line/rect in progress)
+                let render_cell = if self.is_in_tool_preview(x, y) && !is_cursor {
+                    tools::compose_cell(
+                        cell,
+                        self.app.active_block,
+                        Some(self.app.color),
+                        None,
+                    )
+                } else {
+                    cell
+                };
+
+                // Resolve to (char, fg, bg) using unified path
+                let (ch_out, mut fg, mut bg) = if render_cell.ch == blocks::FULL {
+                    let c = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
+                    ('\u{2588}', c, c)
+                } else if render_cell.is_empty() {
+                    (' ', Color::Reset, grid_bg(x, y, show_grid, theme))
+                } else if is_half_block(render_cell.ch) {
+                    resolve_half_block_for_display(render_cell, x, y, show_grid, theme)
+                } else {
+                    // Fractional fills, shades, and other single-color blocks
+                    let fg_color = render_cell.fg.map_or(Color::Reset, |rgb| rgb.to_ratatui());
+                    (render_cell.ch, fg_color, grid_bg(x, y, show_grid, theme))
+                };
+
+                // Symmetry axis highlight
+                let canvas_w = self.app.canvas.width;
+                let canvas_h = self.app.canvas.height;
+                let on_h_axis = self.app.symmetry.has_horizontal()
+                    && (x == canvas_w / 2 - 1 || x == canvas_w / 2);
+                let on_v_axis = self.app.symmetry.has_vertical()
+                    && (y == canvas_h / 2 - 1 || y == canvas_h / 2);
+                if (on_h_axis || on_v_axis) && !is_cursor
+                    && render_cell.is_empty()
+                {
+                    bg = Color::Indexed(238);
+                }
+
+                // Cursor inversion
+                if is_cursor {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+
+                let style = Style::default().fg(fg).bg(bg);
+
+                // Paint across zoom width
+                match zoom {
+                    1 => {
+                        buf.set_string(screen_x, screen_y, ch_out.to_string(), style);
+                    }
+                    2 => {
+                        let s: String = std::iter::repeat_n(ch_out, 2).collect();
+                        buf.set_string(screen_x, screen_y, &s, style);
+                    }
+                    4 => {
+                        let s: String = std::iter::repeat_n(ch_out, 4).collect();
+                        buf.set_string(screen_x, screen_y, &s, style);
+                        // Second row: same content
+                        if screen_y + 1 < area.y + area.height {
+                            buf.set_string(screen_x, screen_y + 1, &s, style);
                         }
-                        BlockChar::Empty => {
-                            (' ', cell.fg.to_ratatui(), Color::Reset)
-                        }
-                        BlockChar::UpperHalf | BlockChar::LowerHalf
-                        | BlockChar::LeftHalf | BlockChar::RightHalf => {
-                            resolve_half_block(cell, x, y, false)
-                        }
-                    };
-                    let style = Style::default().fg(fg).bg(bg);
-                    buf.set_string(screen_x, screen_y, ch.to_string(), style);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -281,46 +273,49 @@ impl<'a> Widget for TruePreviewWidget<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::Rgb;
+    use crate::theme::WARM;
 
     // --- grid_bg tests ---
 
     #[test]
     fn grid_bg_even_cell_with_grid() {
-        assert_eq!(grid_bg(0, 0, true), Color::Indexed(235));
-        assert_eq!(grid_bg(2, 4, true), Color::Indexed(235));
+        assert_eq!(grid_bg(0, 0, true, &WARM), WARM.grid_even);
+        assert_eq!(grid_bg(2, 4, true, &WARM), WARM.grid_even);
     }
 
     #[test]
     fn grid_bg_odd_cell_with_grid() {
-        assert_eq!(grid_bg(1, 0, true), Color::Indexed(234));
-        assert_eq!(grid_bg(0, 1, true), Color::Indexed(234));
+        assert_eq!(grid_bg(1, 0, true, &WARM), WARM.grid_odd);
+        assert_eq!(grid_bg(0, 1, true, &WARM), WARM.grid_odd);
     }
 
     #[test]
     fn grid_bg_without_grid() {
-        assert_eq!(grid_bg(0, 0, false), Color::Reset);
-        assert_eq!(grid_bg(1, 0, false), Color::Reset);
+        assert_eq!(grid_bg(0, 0, false, &WARM), Color::Reset);
+        assert_eq!(grid_bg(1, 0, false, &WARM), Color::Reset);
     }
 
-    // --- resolve_half_block tests ---
+    // --- resolve_half_block_for_display tests ---
 
-    fn cell(block: BlockChar, fg: u8, bg: u8) -> Cell {
-        Cell { block, fg: Color256(fg), bg: Color256(bg) }
+    const RED: Rgb = Rgb { r: 205, g: 0, b: 0 };
+    const BLUE: Rgb = Rgb { r: 0, g: 0, b: 238 };
+
+    fn make_cell(ch: char, fg: Option<Rgb>, bg: Option<Rgb>) -> Cell {
+        Cell { ch, fg, bg }
     }
 
     #[test]
     fn upper_half_one_transparent_bottom() {
-        // UpperHalf(red, black) → red top, grid bottom
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::UpperHalf, 1, 0), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, true, &WARM);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
-        assert_eq!(bg, Color::Indexed(235));
+        assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn upper_half_both_opaque() {
-        // UpperHalf(red, blue) → no transparency
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::UpperHalf, 1, 4), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));
@@ -328,63 +323,54 @@ mod tests {
 
     #[test]
     fn upper_half_one_transparent_top_flips() {
-        // UpperHalf(black, blue) → flips to ▄ blue on grid
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::UpperHalf, 0, 4), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, Some(BLUE)), 0, 0, true, &WARM);
         assert_eq!(ch, '▄');
         assert_eq!(fg, Color::Indexed(4));
-        assert_eq!(bg, Color::Indexed(235));
+        assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn upper_half_both_transparent() {
-        // UpperHalf(black, black) → empty
-        let (ch, _fg, bg) = resolve_half_block(cell(BlockChar::UpperHalf, 0, 0), 0, 0, true);
+        let (ch, _fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, None, None), 0, 0, true, &WARM);
         assert_eq!(ch, ' ');
-        assert_eq!(bg, Color::Indexed(235));
+        assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn left_half_one_transparent_right() {
-        // LeftHalf(red, black) → red left, grid right
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::LeftHalf, 1, 0), 1, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), None), 1, 0, true, &WARM);
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
-        assert_eq!(bg, Color::Indexed(234));
+        assert_eq!(bg, WARM.grid_odd);
     }
 
     #[test]
     fn left_half_flips_when_left_transparent() {
-        // LeftHalf(black, red) → flips to ▐ red on grid
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::LeftHalf, 0, 1), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, None, Some(RED)), 0, 0, true, &WARM);
         assert_eq!(ch, '▐');
         assert_eq!(fg, Color::Indexed(1));
-        assert_eq!(bg, Color::Indexed(235));
+        assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn lower_half_defensive() {
-        // LowerHalf(blue, black) → fg=bottom=blue, bg=top=black
-        // top transparent, bottom opaque → ▄ blue on grid
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::LowerHalf, 4, 0), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LOWER_HALF, Some(BLUE), None), 0, 0, true, &WARM);
         assert_eq!(ch, '▄');
         assert_eq!(fg, Color::Indexed(4));
-        assert_eq!(bg, Color::Indexed(235));
+        assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn right_half_defensive() {
-        // RightHalf(red, black) → fg=right=red, bg=left=black
-        // left transparent, right opaque → ▐ red on grid
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::RightHalf, 1, 0), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::RIGHT_HALF, Some(RED), None), 0, 0, true, &WARM);
         assert_eq!(ch, '▐');
         assert_eq!(fg, Color::Indexed(1));
-        assert_eq!(bg, Color::Indexed(235));
+        assert_eq!(bg, WARM.grid_even);
     }
 
     #[test]
     fn resolve_grid_off_uses_reset() {
-        // With grid off, transparent halves use Color::Reset
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::UpperHalf, 1, 0), 0, 0, false);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::UPPER_HALF, Some(RED), None), 0, 0, false, &WARM);
         assert_eq!(ch, '▀');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Reset);
@@ -392,8 +378,7 @@ mod tests {
 
     #[test]
     fn left_half_both_opaque() {
-        // LeftHalf(red, blue) → no transparency
-        let (ch, fg, bg) = resolve_half_block(cell(BlockChar::LeftHalf, 1, 4), 0, 0, true);
+        let (ch, fg, bg) = resolve_half_block_for_display(make_cell(blocks::LEFT_HALF, Some(RED), Some(BLUE)), 0, 0, true, &WARM);
         assert_eq!(ch, '▌');
         assert_eq!(fg, Color::Indexed(1));
         assert_eq!(bg, Color::Indexed(4));

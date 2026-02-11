@@ -62,6 +62,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
         top: 0,
         width: 0,
         height: 0,
+        viewport_w: 0,
+        viewport_h: 0,
     };
 
     // Load file from command-line argument if provided
@@ -80,6 +82,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
         terminal.draw(|f| {
             canvas_area = ui::render(f, &app);
         })?;
+
+        // Store viewport dimensions for input handling
+        app.viewport_w = canvas_area.viewport_w;
+        app.viewport_h = canvas_area.viewport_h;
 
         // Poll for events with timeout for status message ticking
         if event::poll(Duration::from_millis(100))? {

@@ -117,13 +117,13 @@ impl Default for History {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::{BlockChar, Cell, Color256};
+    use crate::cell::{blocks, Cell, Rgb};
 
     fn red_cell() -> Cell {
         Cell {
-            block: BlockChar::Full,
-            fg: Color256(1),
-            bg: Color256::BLACK,
+            ch: blocks::FULL,
+            fg: Some(Rgb { r: 205, g: 0, b: 0 }),
+            bg: None,
         }
     }
 
@@ -228,5 +228,42 @@ mod tests {
             count += 1;
         }
         assert!(count <= 256);
+    }
+
+    // --- Cycle 15 QA: Shade character undo test ---
+
+    #[test]
+    fn test_undo_shade_placement() {
+        use crate::cell::blocks;
+
+        let mut canvas = Canvas::new();
+        let mut history = History::new();
+
+        let old = canvas.get(4, 6).unwrap();
+        let new = Cell {
+            ch: blocks::SHADE_DARK,
+            fg: Some(Rgb { r: 0, g: 205, b: 0 }),
+            bg: None,
+        };
+        canvas.set(4, 6, new);
+        history.push_mutation(CellMutation {
+            x: 4,
+            y: 6,
+            old,
+            new,
+        });
+
+        // Verify shade was placed
+        assert_eq!(canvas.get(4, 6).unwrap().ch, blocks::SHADE_DARK);
+
+        // Undo should revert to original empty cell
+        assert!(history.undo(&mut canvas));
+        let reverted = canvas.get(4, 6).unwrap();
+        assert_eq!(reverted.ch, ' ');
+        assert_eq!(reverted, Cell::default());
+
+        // Redo should restore the shade
+        assert!(history.redo(&mut canvas));
+        assert_eq!(canvas.get(4, 6).unwrap().ch, blocks::SHADE_DARK);
     }
 }

@@ -4,9 +4,9 @@ pub mod palette;
 pub mod statusbar;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, AppMode};
 use crate::input::CanvasArea;
@@ -19,17 +19,41 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
 
     // Check minimum size
     if size.width < 100 || size.height < 36 {
-        let msg = Paragraph::new(format!(
-            "Terminal too small: {}x{}\nMinimum: 100x36\nPlease resize.",
-            size.width, size.height
-        ))
-        .style(Style::default().fg(Color::Red));
+        let lines = vec![
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                "\u{0295}\u{2022}\u{1d25}\u{2022}\u{0294}",
+                Style::default().fg(theme.accent),
+            )),
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                "oh no, i'm squished!",
+                Style::default().fg(Color::White),
+            )),
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                format!("current: {}x{}", size.width, size.height),
+                Style::default().fg(theme.dim),
+            )),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                "need:    100x36",
+                Style::default().fg(theme.dim),
+            )),
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                "please resize your terminal!",
+                Style::default().fg(theme.highlight),
+            )),
+        ];
+        let msg = Paragraph::new(lines).alignment(Alignment::Center);
         f.render_widget(msg, size);
         return CanvasArea {
             left: 0,
             top: 0,
             width: 0,
             height: 0,
+            viewport_w: 0,
+            viewport_h: 0,
         };
     }
 
@@ -83,39 +107,20 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
     let canvas_area = horizontal[1];
     let palette_area = horizontal[2];
 
-    // Toolbar (3 boxes)
+    // Toolbar (4 boxes)
     let tool_lines = toolbar::tool_lines(app);
     let sym_lines = toolbar::symmetry_lines(app);
     let blk_lines = toolbar::block_lines(app);
+    let clr_lines = toolbar::color_swatch_lines(app);
     render_box_column(f, toolbar_area, &[
         BoxContent { title: " \u{2022} Tools \u{2022} ", lines: &tool_lines },
         BoxContent { title: " \u{2022} Symmetry \u{2022} ", lines: &sym_lines },
         BoxContent { title: " \u{2022} Block \u{2022} ", lines: &blk_lines },
+        BoxContent { title: " \u{2022} Active \u{2022} ", lines: &clr_lines },
     ], theme);
 
-    // Canvas
-    let canvas_screen_area = if app.show_preview && size.width >= 160 {
-        let side_by_side = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Ratio(1, 2),
-                Constraint::Ratio(1, 2),
-            ])
-            .split(canvas_area);
-        let editor_area = editor::render(f, app, side_by_side[0]);
-        editor::render_preview(f, app, side_by_side[1]);
-        editor_area
-    } else if app.show_preview {
-        editor::render_preview(f, app, canvas_area);
-        CanvasArea {
-            left: 0,
-            top: 0,
-            width: 0,
-            height: 0,
-        }
-    } else {
-        editor::render(f, app, canvas_area)
-    };
+    // Canvas — unified zoom-aware renderer
+    let canvas_screen_area = editor::render(f, app, canvas_area);
 
     // Palette (3 boxes)
     let colors_lines = palette::color_lines(app);
@@ -150,6 +155,8 @@ pub fn render(f: &mut Frame, app: &App) -> CanvasArea {
         AppMode::PaletteRename => render_text_input(f, app, size, "Rename Palette", "Enter new name:"),
         AppMode::PaletteExport => render_text_input(f, app, size, "Export Palette", "Enter destination path:"),
         AppMode::NewCanvas => render_new_canvas(f, app, size),
+        AppMode::HexColorInput => render_hex_input(f, app, size),
+        AppMode::BlockPicker => render_block_picker(f, app, size),
         _ => {}
     }
 
@@ -346,57 +353,81 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("  P  Pencil", txt),
-            Span::styled("         Tab  Preview", txt),
+            Span::styled("         WASD  Move cursor", txt),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("  E  Eraser", txt),
-            Span::styled("         B    Cycle block", txt),
+            Span::styled("         Space Draw at cursor", txt),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("  L  Line", txt),
-            Span::styled("           T    Rect fill/outline", txt),
+            Span::styled("           Mouse Click/drag", txt),
         ]),
-        ratatui::text::Line::from(Span::styled("  R  Rectangle", txt)),
+        ratatui::text::Line::from(vec![
+            Span::styled("  R  Rectangle", txt),
+            Span::styled("      Z    Cycle zoom (1x/2x/4x)", txt),
+        ]),
         ratatui::text::Line::from(vec![
             Span::styled("  F  Fill", txt),
-            Span::styled("           Symmetry", hdr),
+            Span::styled("           B    Cycle block", txt),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("  I  Eyedropper", txt),
-            Span::styled("     \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", sep),
+            Span::styled("     \u{21E7}B   Block picker", txt),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("                    ", txt),
-            Span::styled("H  Horizontal mirror", txt),
+            Span::styled("G    Cycle shade (\u{2591}\u{2592}\u{2593})", txt),
         ]),
+        ratatui::text::Line::from(vec![
+            Span::styled("                    ", txt),
+            Span::styled("T    Rect fill/outline", txt),
+        ]),
+        ratatui::text::Line::from(""),
         ratatui::text::Line::from(vec![
             Span::styled("  Colors", hdr),
-            Span::styled("            V  Vertical mirror", txt),
+            Span::styled("            Symmetry", hdr),
         ]),
-        ratatui::text::Line::from(Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", sep)),
+        ratatui::text::Line::from(vec![
+            Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", sep),
+            Span::styled("            \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", sep),
+        ]),
         ratatui::text::Line::from(vec![
             Span::styled("  1-0  Quick pick", txt),
-            Span::styled("   File", hdr),
+            Span::styled("   H  Horizontal mirror", txt),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("  S    HSL sliders", txt),
-            Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500}", sep),
+            Span::styled("  V  Vertical mirror", txt),
         ]),
+        ratatui::text::Line::from(Span::styled("  X    Hex color input", txt)),
         ratatui::text::Line::from(vec![
             Span::styled("  A    Add color", txt),
-            Span::styled("    ^S Save  ^O Open", txt),
+            Span::styled("    File", hdr),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("  C    Palettes", txt),
-            Span::styled("     ^N New   ^E Export", txt),
+            Span::styled("     \u{2500}\u{2500}\u{2500}\u{2500}", sep),
         ]),
         ratatui::text::Line::from(vec![
             Span::styled("                    ", txt),
-            Span::styled("^Z Undo  ^Y Redo", txt),
+            Span::styled("^S Save  ^O Open", txt),
         ]),
         ratatui::text::Line::from(vec![
-            Span::styled("                    ", txt),
-            Span::styled("^T Theme  Q Quit  ? Help", txt),
+            Span::styled("  Palette", hdr),
+            Span::styled("           ^N New   ^E Export", txt),
+        ]),
+        ratatui::text::Line::from(vec![
+            Span::styled("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}", sep),
+            Span::styled("           ^Z Undo  ^Y Redo", txt),
+        ]),
+        ratatui::text::Line::from(vec![
+            Span::styled("  \u{2191}\u{2193}\u{2190}\u{2192} Browse", txt),
+            Span::styled("        ^T Theme", txt),
+        ]),
+        ratatui::text::Line::from(vec![
+            Span::styled("  Enter  Select/Toggle", txt),
+            Span::styled("  Q Quit  ? Help", txt),
         ]),
         ratatui::text::Line::from(""),
         ratatui::text::Line::from(Span::styled(
@@ -420,6 +451,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Help ")
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
+    f.render_widget(Clear, help_area);
     f.render_widget(help, help_area);
 }
 
@@ -439,6 +471,7 @@ fn render_quit_prompt(f: &mut Frame, area: Rect) {
                 .title(" Quit ")
                 .style(Style::default().fg(Color::White).bg(Color::Red)),
         );
+    f.render_widget(Clear, prompt_area);
     f.render_widget(prompt, prompt_area);
 }
 
@@ -490,23 +523,28 @@ fn render_file_dialog(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Open File ")
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
+    f.render_widget(Clear, dialog_area);
     f.render_widget(dialog, dialog_area);
 }
 
 fn render_export_dialog(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
-    let width = 40;
-    let height = 10;
+    let is_colored = app.export_format == 1;
+    let width = 42;
+    let height = if is_colored { 17 } else { 12 };
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let dialog_area = Rect::new(x, y, width, height);
 
-    let format_opts = ["Unicode", "ANSI Art"];
+    let format_opts = ["Plain", "Colored"];
+    let color_fmt_opts = ["24-bit RGB", "256 color", "16 color"];
     let dest_opts = ["Clipboard", "File"];
+
+    let dim_style = Style::default().fg(theme.dim).bg(theme.panel_bg);
 
     let mut lines: Vec<ratatui::text::Line> = Vec::new();
 
-    // Format row
+    // Format row (cursor == 0)
     lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
         " Format:",
         Style::default().fg(theme.accent).bg(theme.panel_bg),
@@ -517,9 +555,9 @@ fn render_export_dialog(f: &mut Frame, app: &App, area: Rect) {
         let selected = i == app.export_format;
         let focused = app.export_cursor == 0;
         let style = if selected && focused {
-            Style::default().fg(Color::Black).bg(theme.highlight)
+            Style::default().fg(Color::Indexed(16)).bg(theme.highlight)
         } else if selected {
-            Style::default().fg(Color::Black).bg(Color::Gray)
+            Style::default().fg(Color::Indexed(16)).bg(Color::Gray)
         } else {
             Style::default().fg(Color::White).bg(theme.panel_bg)
         };
@@ -529,22 +567,67 @@ fn render_export_dialog(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     lines.push(ratatui::text::Line::from(fmt_spans));
+
+    // Format description
+    let fmt_desc = if is_colored {
+        "  Blocks with ANSI color codes"
+    } else {
+        "  Block characters only, no color"
+    };
+    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(fmt_desc, dim_style)));
     lines.push(ratatui::text::Line::from(""));
 
-    // Destination row
+    // Color format row (cursor == 1, only when Colored)
+    if is_colored {
+        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+            " Color depth:",
+            Style::default().fg(theme.accent).bg(theme.panel_bg),
+        )));
+        let mut cf_spans = Vec::new();
+        cf_spans.push(ratatui::text::Span::raw("  "));
+        for (i, opt) in color_fmt_opts.iter().enumerate() {
+            let selected = i == app.export_color_format;
+            let focused = app.export_cursor == 1;
+            let style = if selected && focused {
+                Style::default().fg(Color::Indexed(16)).bg(theme.highlight)
+            } else if selected {
+                Style::default().fg(Color::Indexed(16)).bg(Color::Gray)
+            } else {
+                Style::default().fg(Color::White).bg(theme.panel_bg)
+            };
+            cf_spans.push(ratatui::text::Span::styled(format!(" {} ", opt), style));
+            if i < color_fmt_opts.len() - 1 {
+                cf_spans.push(ratatui::text::Span::raw(" "));
+            }
+        }
+        lines.push(ratatui::text::Line::from(cf_spans));
+
+        // Color format description
+        let cf_desc = match app.export_color_format {
+            0 => "  Best quality \u{2014} modern terminals",
+            1 => "  Good compat \u{2014} most terminals",
+            _ => "  Max compat \u{2014} all terminals",
+        };
+        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(cf_desc, dim_style)));
+        lines.push(ratatui::text::Line::from(""));
+    }
+
+    // Destination row (cursor == 1 for Plain, cursor == 2 for Colored)
+    let dest_cursor = if is_colored { 2 } else { 1 };
+    let ext = if is_colored { ".ans" } else { ".txt" };
     lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-        " Destination:",
+        format!(" Destination ({}):", ext),
         Style::default().fg(theme.accent).bg(theme.panel_bg),
     )));
     let mut dest_spans = Vec::new();
     dest_spans.push(ratatui::text::Span::raw("  "));
     for (i, opt) in dest_opts.iter().enumerate() {
         let selected = i == app.export_dest;
-        let focused = app.export_cursor == 1;
+        let focused = app.export_cursor == dest_cursor;
         let style = if selected && focused {
-            Style::default().fg(Color::Black).bg(theme.highlight)
+            Style::default().fg(Color::Indexed(16)).bg(theme.highlight)
         } else if selected {
-            Style::default().fg(Color::Black).bg(Color::Gray)
+            Style::default().fg(Color::Indexed(16)).bg(Color::Gray)
         } else {
             Style::default().fg(Color::White).bg(theme.panel_bg)
         };
@@ -570,6 +653,7 @@ fn render_export_dialog(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Export ")
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
+    f.render_widget(Clear, dialog_area);
     f.render_widget(dialog, dialog_area);
 }
 
@@ -606,6 +690,7 @@ fn render_text_input(f: &mut Frame, app: &App, area: Rect, title: &str, prompt: 
                 .title(format!(" {} ", title))
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
+    f.render_widget(Clear, dialog_area);
     f.render_widget(dialog, dialog_area);
 }
 
@@ -626,13 +711,14 @@ fn render_recovery_prompt(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Recovery ")
                 .style(Style::default().fg(Color::White).bg(theme.border_accent)),
         );
+    f.render_widget(Clear, prompt_area);
     f.render_widget(prompt, prompt_area);
 }
 
 fn render_color_sliders(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
     let width = 44;
-    let height = 14;
+    let height = 15;
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let dialog_area = Rect::new(x, y, width, height);
@@ -684,6 +770,7 @@ fn render_color_sliders(f: &mut Frame, app: &App, area: Rect) {
     let (r, g, b) = crate::palette::hsl_to_rgb(app.slider_h, app.slider_s, app.slider_l);
     let preview_color = crate::palette::nearest_color(r, g, b);
     let preview_rcolor = preview_color.to_ratatui();
+    let idx_256 = crate::cell::nearest_256(&preview_color);
 
     lines.push(ratatui::text::Line::from(vec![
         ratatui::text::Span::styled(" Preview: ", Style::default().fg(theme.dim).bg(theme.panel_bg)),
@@ -698,7 +785,12 @@ fn render_color_sliders(f: &mut Frame, app: &App, area: Rect) {
     ]));
 
     lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-        format!(" RGB: ({}, {}, {})  #{}", r, g, b, preview_color.0),
+        format!(" RGB: ({}, {}, {})", r, g, b),
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+        format!(" Hex: {}  Index: {}", preview_color.name(), idx_256),
         Style::default().fg(theme.dim).bg(theme.panel_bg),
     )));
 
@@ -717,6 +809,7 @@ fn render_color_sliders(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Color Sliders ")
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
+    f.render_widget(Clear, dialog_area);
     f.render_widget(dialog, dialog_area);
 }
 
@@ -793,12 +886,136 @@ fn render_palette_dialog(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Custom Palettes ")
                 .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
         );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_hex_input(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
+    let width = 40u16;
+    let height = 9u16;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    let mut lines: Vec<ratatui::text::Line> = Vec::new();
+
+    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+        " Enter hex color (#RRGGBB):",
+        Style::default().fg(theme.accent).bg(theme.panel_bg),
+    )));
+    lines.push(ratatui::text::Line::from(""));
+    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+        format!(" {}\u{2588}", app.text_input),
+        Style::default().fg(Color::White).bg(Color::Black),
+    )));
+    lines.push(ratatui::text::Line::from(""));
+
+    // Live preview when input is a valid hex color
+    let parsed = crate::cell::parse_hex_color(&app.text_input);
+    if let Some(rgb) = parsed {
+        let preview_color = crate::palette::nearest_color(rgb.r, rgb.g, rgb.b);
+        let preview_rcolor = preview_color.to_ratatui();
+        lines.push(ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                " Preview: ",
+                Style::default().fg(theme.dim).bg(theme.panel_bg),
+            ),
+            ratatui::text::Span::styled(
+                "\u{2588}\u{2588}\u{2588}\u{2588}",
+                Style::default().fg(preview_rcolor).bg(theme.panel_bg),
+            ),
+            ratatui::text::Span::styled(
+                format!("  {}", preview_color.name()),
+                Style::default().fg(theme.dim).bg(theme.panel_bg),
+            ),
+        ]));
+    } else {
+        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+            " Preview: ----",
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
+        )));
+    }
+
+    lines.push(ratatui::text::Line::from(""));
+    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+        " Enter Apply  Esc Cancel",
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Hex Color ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+fn render_block_picker(f: &mut Frame, app: &App, area: Rect) {
+    use crate::cell::blocks;
+    use ratatui::text::{Line, Span};
+
+    let theme = app.theme();
+    let width = 38u16;
+    let height = 10u16;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    let labels = [" Primary:    ", " Shades:     ", " Vert Fill:  ", " Horiz Fill: "];
+    let categories: [&[char]; 4] = [
+        &blocks::PRIMARY,
+        &blocks::SHADES,
+        &blocks::VERTICAL_FILLS,
+        &blocks::HORIZONTAL_FILLS,
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (row_idx, (label, chars)) in labels.iter().zip(categories.iter()).enumerate() {
+        let mut spans: Vec<Span> = Vec::new();
+        spans.push(Span::styled(
+            label.to_string(),
+            Style::default().fg(theme.dim).bg(theme.panel_bg),
+        ));
+        for (col_idx, &ch) in chars.iter().enumerate() {
+            let is_selected = row_idx == app.block_picker_row && col_idx == app.block_picker_col;
+            let style = if is_selected {
+                Style::default().fg(theme.panel_bg).bg(theme.highlight)
+            } else {
+                Style::default().fg(theme.highlight).bg(theme.panel_bg)
+            };
+            spans.push(Span::styled(format!("{} ", ch), style));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " \u{2190}\u{2192}\u{2191}\u{2193} Navigate  Enter Select  Esc Cancel",
+        Style::default().fg(theme.dim).bg(theme.panel_bg),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .style(Style::default().fg(Color::White).bg(theme.panel_bg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Block Picker ")
+                .style(Style::default().fg(Color::White).bg(theme.panel_bg)),
+        );
+    f.render_widget(Clear, dialog_area);
     f.render_widget(dialog, dialog_area);
 }
 
 fn render_new_canvas(f: &mut Frame, app: &App, area: Rect) {
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::Clear;
 
     let theme = app.theme();
     let w = 30u16;
